@@ -682,6 +682,8 @@ def build_user_view(cloud_user):
         "username": cloud_user["username"],
         "email": cloud_user.get("email", ""),
         "email_verified": bool(cloud_user.get("email_verified", True)),
+        "discord_id": cloud_user.get("discord_id", ""),
+        "discord_username": cloud_user.get("discord_username", ""),
         "exe_path": mod["game_dir"] or prefs["exe_path"],
         "exe_verified": bool(mod["md5_ok"]),
         "exe_md5": mod["exe_md5"],
@@ -762,6 +764,73 @@ def auth_resend_code():
         "/v2/auth/resend-code",
         {"username_or_email": data.get("username_or_email") or data.get("username") or data.get("email") or ""},
     )
+    return jsonify(body), st
+
+
+@app.route("/api/auth/forgot-password", methods=["POST"])
+def auth_forgot_password():
+    data = request.get_json(silent=True) or {}
+    st, body = cloud_request(
+        "POST",
+        "/v2/auth/forgot-password",
+        {"email": data.get("email", "")},
+    )
+    return jsonify(body), st
+
+
+@app.route("/api/auth/reset-password", methods=["POST"])
+def auth_reset_password():
+    data = request.get_json(silent=True) or {}
+    st, body = cloud_request(
+        "POST",
+        "/v2/auth/reset-password",
+        {
+            "email": data.get("email", ""),
+            "code": data.get("code", ""),
+            "password": data.get("password", ""),
+        },
+    )
+    if st == 200 and body.get("ok") and body.get("token"):
+        cloud_token = body["token"]
+        cloud_user = body["user"]
+        raw_local, csrf_token = issue_local_session(cloud_token, cloud_user["username"])
+        resp = make_response(jsonify({
+            "ok": True,
+            "csrf_token": csrf_token,
+            "user": build_user_view(cloud_user),
+            "relay": get_bridge_status(),
+        }))
+        resp.set_cookie("scct_session", raw_local, httponly=True, samesite="Strict", max_age=SESSION_TTL_DAYS * 86400)
+        return resp
+    return jsonify(body), st
+
+
+@app.route("/api/auth/discord/authorize-url", methods=["GET"])
+def auth_discord_authorize_url():
+    """Return the Discord OAuth2 authorize URL so the launcher can open it in the browser."""
+    return jsonify({
+        "ok": True,
+        "url": f"{CLOUD_API_URL}/v2/auth/discord",
+    })
+
+
+@app.route("/api/auth/discord/link", methods=["POST"])
+@require_auth
+def auth_discord_link(sess):
+    data = request.get_json(silent=True) or {}
+    st, body = cloud_request(
+        "POST",
+        "/v2/auth/discord/link",
+        {"link_token": data.get("link_token", "")},
+        bearer_token=sess["cloud_token"],
+    )
+    return jsonify(body), st
+
+
+@app.route("/api/auth/discord/unlink", methods=["POST"])
+@require_auth
+def auth_discord_unlink(sess):
+    st, body = cloud_request("POST", "/v2/auth/discord/unlink", {}, bearer_token=sess["cloud_token"])
     return jsonify(body), st
 
 

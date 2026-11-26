@@ -35,6 +35,8 @@ interface OnlineAccountRow {
   active_room: string | null;
   friendly_fire: number;
   last_seen: string | null;
+  discord_id: string | null;
+  discord_username: string | null;
 }
 
 function jsonRes(status: number, body: unknown, extraHeaders?: Record<string, string>): Response {
@@ -321,7 +323,7 @@ async function authenticateBearer(request: Request, db: D1Database, nowMs: numbe
   const tokenHash = await sha256Hex(rawToken);
   const row = await db
     .prepare(
-      `SELECT id, display_name, username, email, email_verified, pw_salt, password_hash, active_room, friendly_fire, last_seen
+      `SELECT id, display_name, username, email, email_verified, pw_salt, password_hash, active_room, friendly_fire, last_seen, discord_id, discord_username
        FROM accounts WHERE token_hash = ?`,
     )
     .bind(tokenHash)
@@ -429,6 +431,8 @@ export async function handleOnlineV2(
         email_verified: true,
         active_room: account.active_room ?? "",
         friendly_fire: Boolean(account.friendly_fire),
+        discord_id: account.discord_id ?? "",
+        discord_username: account.discord_username ?? "",
       },
     });
   }
@@ -451,6 +455,28 @@ export async function handleOnlineV2(
     await env.DB.prepare("DELETE FROM host_stats WHERE account_id = ?").bind(account.id).run();
     await env.DB.prepare("DELETE FROM accounts WHERE id = ?").bind(account.id).run();
     return jsonRes(200, { ok: true });
+  }
+  if (url.pathname === "/v2/auth/forgot-password" && request.method === "POST") {
+    return forgotPasswordV2(request, env, clientKey, nowMs);
+  }
+  if (url.pathname === "/v2/auth/reset-password" && request.method === "POST") {
+    return resetPasswordV2(request, env, clientKey, nowMs);
+  }
+  if (url.pathname === "/v2/auth/discord" && request.method === "GET") {
+    return discordAuthorizeV2(env);
+  }
+  if (url.pathname === "/v2/auth/discord/callback" && request.method === "GET") {
+    return discordCallbackV2(request, env, nowMs);
+  }
+  if (url.pathname === "/v2/auth/discord/link" && request.method === "POST") {
+    const account = await authenticateBearer(request, env.DB, nowMs);
+    if (!account) return jsonRes(401, { ok: false, error: "Authentication required." });
+    return discordLinkV2(request, env, account);
+  }
+  if (url.pathname === "/v2/auth/discord/unlink" && request.method === "POST") {
+    const account = await authenticateBearer(request, env.DB, nowMs);
+    if (!account) return jsonRes(401, { ok: false, error: "Authentication required." });
+    return discordUnlinkV2(env.DB, account);
   }
 
   // Friends routes
@@ -622,6 +648,8 @@ async function verifyEmailV2(request: Request, env: Env, clientKey: string, nowM
       email_verified: true,
       active_room: user.active_room ?? "",
       friendly_fire: Boolean(user.friendly_fire),
+      discord_id: user.discord_id ?? "",
+      discord_username: user.discord_username ?? "",
     },
   });
 }
@@ -735,6 +763,8 @@ async function loginV2(request: Request, env: Env, clientKey: string, nowMs: num
       email_verified: true,
       active_room: row.active_room ?? "",
       friendly_fire: Boolean(row.friendly_fire),
+      discord_id: row.discord_id ?? "",
+      discord_username: row.discord_username ?? "",
     },
   });
 }
@@ -945,4 +975,423 @@ async function createRoomV2(request: Request, db: D1Database, me: OnlineAccountR
     },
     ws_path: `/v2/relay/${code}`,
   });
+}
+
+// --- Password reset (email OTP, same pattern as email verification) ---
+
+const RESET_TTL_MS = 15 * 60_000;
+const RESET_MAX_ATTEMPTS = 5;
+const RESET_RESEND_COOLDOWN_MS = 60_000;
+
+async function forgotPasswordV2(request: Request, env: Env, clientKey: string, nowMs: number): Promise<Response> {
+  const body = await readJsonBody(request);
+  if (body instanceof Response) return body;
+
+  const email = String(body.email ?? "").trim();
+  if (!email || email.length > 254 || !EMAIL_RE.test(email)) {
+    return jsonRes(400, { ok: false, error: "Enter a valid email address." });
+  }
+
+  const ipKey = `v2_fpw_ip:${clientKey}`;
+  const wait = await checkLockout(env.DB, [ipKey], nowMs);
+  if (wait > 0) return jsonRes(429, { ok: false, error: `Too many attempts. Wait ${wait}s.`, retry_after: wait });
+
+  const user = await env.DB.prepare(
+    "SELECT id, username, email, email_verified FROM accounts WHERE email = ? COLLATE NOCASE",
+  )
+    .bind(email)
+    .first<{ id: string; username: string; email: string; email_verified: number }>();
+
+  if (!user || user.email_verified !== 1) {
+    await recordAuthFailure(env.DB, [ipKey], nowMs);
+    return jsonRes(200, {
+      ok: true,
+      message: "If an account with that email exists, a reset code has been sent.",
+    });
+  }
+
+  const lastRow = await env.DB.prepare(
+    "SELECT created_at FROM password_resets WHERE account_id = ? ORDER BY id DESC LIMIT 1",
+  )
+    .bind(user.id)
+    .first<{ created_at: string }>();
+  if (lastRow) {
+    const age = nowMs - Date.parse(lastRow.created_at);
+    if (age >= 0 && age < RESET_RESEND_COOLDOWN_MS) {
+      const rem = Math.ceil((RESET_RESEND_COOLDOWN_MS - age) / 1000);
+      return jsonRes(429, { ok: false, error: `Wait ${rem}s before requesting another code.`, retry_after: rem });
+    }
+  }
+
+  const code = generateSixDigitCode();
+  const codeSalt = randomHex(16);
+  const codeHash = await sha256Hex(`${codeSalt}:${code}`);
+  const nowIso = new Date(nowMs).toISOString();
+  const expiresIso = new Date(nowMs + RESET_TTL_MS).toISOString();
+
+  await env.DB.prepare("DELETE FROM password_resets WHERE account_id = ?").bind(user.id).run();
+  await env.DB.prepare(
+    `INSERT INTO password_resets (account_id, code_salt, code_hash, attempts, expires_at, created_at)
+     VALUES (?, ?, ?, 0, ?, ?)`,
+  )
+    .bind(user.id, codeSalt, codeHash, expiresIso, nowIso)
+    .run();
+
+  const brevoKey = (env.BREVO_API_KEY ?? "").trim();
+  const resendKey = (env.RESEND_API_KEY ?? "").trim();
+  const rawFrom = (env.EMAIL_FROM ?? "").trim();
+  if ((!brevoKey && !resendKey) || !rawFrom) {
+    return jsonRes(200, {
+      ok: true,
+      message: "If an account with that email exists, a reset code has been sent.",
+    });
+  }
+
+  const subject = "SCCT Co-op Password Reset";
+  const textBody = `Agent ${user.username},\n\nYour password reset code is: ${code}\n\nThis code expires in 15 minutes.`;
+  const htmlBody = `<div style="font-family:sans-serif;background:#090b0d;color:#eef2f5;padding:24px;border-radius:6px">`
+    + `<h2 style="margin:0 0 12px;color:#64dc4b">SCCT Co-op Password Reset</h2>`
+    + `<p>Agent <b>${escapeHtml(user.username)}</b>,</p>`
+    + `<p>Your password reset code is:</p>`
+    + `<p style="font-size:28px;font-weight:700;letter-spacing:6px;color:#64dc4b;margin:16px 0">${escapeHtml(code)}</p>`
+    + `<p style="color:#98a4b0;font-size:13px">This code expires in 15 minutes.</p></div>`;
+
+  if (brevoKey) {
+    const sender = parseFromHeader(rawFrom);
+    try {
+      const resp = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: { "api-key": brevoKey, "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ sender, to: [{ email: user.email, name: user.username }], subject, textContent: textBody, htmlContent: htmlBody }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!resp.ok) return jsonRes(200, { ok: true, message: "If an account with that email exists, a reset code has been sent." });
+    } catch {
+      return jsonRes(200, { ok: true, message: "If an account with that email exists, a reset code has been sent." });
+    }
+  } else {
+    try {
+      const resp = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: { authorization: `Bearer ${resendKey}`, "content-type": "application/json" },
+        body: JSON.stringify({ from: rawFrom, to: [user.email], subject, text: textBody, html: htmlBody }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!resp.ok) return jsonRes(200, { ok: true, message: "If an account with that email exists, a reset code has been sent." });
+    } catch {
+      return jsonRes(200, { ok: true, message: "If an account with that email exists, a reset code has been sent." });
+    }
+  }
+
+  return jsonRes(200, {
+    ok: true,
+    email: maskEmail(user.email),
+    message: "If an account with that email exists, a reset code has been sent.",
+  });
+}
+
+async function resetPasswordV2(request: Request, env: Env, clientKey: string, nowMs: number): Promise<Response> {
+  const body = await readJsonBody(request);
+  if (body instanceof Response) return body;
+
+  const email = String(body.email ?? "").trim();
+  const code = String(body.code ?? "").trim();
+  const newPassword = String(body.password ?? "");
+
+  if (!email || !/^\d{6}$/.test(code)) {
+    return jsonRes(400, { ok: false, error: "Email and 6-digit reset code are required." });
+  }
+  const pwErr = validatePasswordStrength(newPassword);
+  if (pwErr) return jsonRes(400, { ok: false, error: pwErr });
+
+  const lockKeys = [`v2_rst_ip:${clientKey}`, `v2_rst_em:${email.toLowerCase()}`];
+  const wait = await checkLockout(env.DB, lockKeys, nowMs);
+  if (wait > 0) return jsonRes(429, { ok: false, error: `Too many attempts. Wait ${wait}s.`, retry_after: wait });
+
+  const user = await env.DB.prepare(
+    "SELECT id, username, email_verified, discord_id, discord_username FROM accounts WHERE email = ? COLLATE NOCASE",
+  )
+    .bind(email)
+    .first<{ id: string; username: string; email_verified: number; discord_id: string | null; discord_username: string | null }>();
+
+  if (!user || user.email_verified !== 1) {
+    await recordAuthFailure(env.DB, lockKeys, nowMs);
+    return jsonRes(400, { ok: false, error: "Invalid reset code." });
+  }
+
+  const rRow = await env.DB.prepare(
+    `SELECT id, code_salt, code_hash, attempts, expires_at
+     FROM password_resets WHERE account_id = ? ORDER BY id DESC LIMIT 1`,
+  )
+    .bind(user.id)
+    .first<{ id: number; code_salt: string; code_hash: string; attempts: number; expires_at: string }>();
+
+  if (!rRow) return jsonRes(400, { ok: false, error: "No pending password reset. Request a new code." });
+  if (Date.parse(rRow.expires_at) <= nowMs) {
+    return jsonRes(400, { ok: false, error: "Reset code expired. Request a new code." });
+  }
+  if (rRow.attempts >= RESET_MAX_ATTEMPTS) {
+    return jsonRes(429, { ok: false, error: "Too many wrong codes. Request a new reset code." });
+  }
+
+  const candidateHash = await sha256Hex(`${rRow.code_salt}:${code}`);
+  if (!sameHex(candidateHash, rRow.code_hash)) {
+    await env.DB.prepare("UPDATE password_resets SET attempts = attempts + 1 WHERE id = ?").bind(rRow.id).run();
+    await recordAuthFailure(env.DB, lockKeys, nowMs);
+    return jsonRes(400, { ok: false, error: "Invalid reset code." });
+  }
+
+  const { saltHex, hashHex } = await hashPasswordPbkdf2(newPassword);
+  const rawToken = randomHex(32);
+  const tokenHash = await sha256Hex(rawToken);
+  const nowIso = new Date(nowMs).toISOString();
+
+  await env.DB.prepare(
+    "UPDATE accounts SET pw_salt = ?, password_hash = ?, token_hash = ?, last_seen = ? WHERE id = ?",
+  )
+    .bind(saltHex, hashHex, tokenHash, nowIso, user.id)
+    .run();
+  await env.DB.prepare("DELETE FROM password_resets WHERE account_id = ?").bind(user.id).run();
+  await clearAuthFailures(env.DB, lockKeys);
+
+  return jsonRes(200, {
+    ok: true,
+    token: rawToken,
+    user: {
+      id: user.id,
+      username: user.username,
+      email,
+      email_verified: true,
+      active_room: "",
+      friendly_fire: false,
+      discord_id: user.discord_id ?? "",
+      discord_username: user.discord_username ?? "",
+    },
+  });
+}
+
+// --- Discord OAuth2 linking ---
+
+const DISCORD_LINK_TTL_MS = 10 * 60_000;
+
+function discordAuthorizeV2(env: Env): Response {
+  const clientId = (env.DISCORD_CLIENT_ID ?? "").trim();
+  const redirectUri = (env.DISCORD_REDIRECT_URI ?? "").trim();
+  if (!clientId || !redirectUri) {
+    return jsonRes(503, { ok: false, error: "Discord authentication is not configured." });
+  }
+  const state = randomHex(16);
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: "code",
+    scope: "identify",
+    state,
+  });
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: `https://discord.com/api/oauth2/authorize?${params.toString()}`,
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+async function discordCallbackV2(request: Request, env: Env, nowMs: number): Promise<Response> {
+  const url = new URL(request.url);
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+
+  if (!code || !state) {
+    return new Response(
+      "<html><body style='font-family:sans-serif;background:#090b0d;color:#eef2f5;padding:24px'><h2 style='color:#e03a3a'>Authorization Failed</h2><p>Missing code or state parameter.</p></body></html>",
+      { status: 400, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } },
+    );
+  }
+
+  const clientId = (env.DISCORD_CLIENT_ID ?? "").trim();
+  const clientSecret = (env.DISCORD_CLIENT_SECRET ?? "").trim();
+  const redirectUri = (env.DISCORD_REDIRECT_URI ?? "").trim();
+  if (!clientId || !clientSecret || !redirectUri) {
+    return new Response(
+      "<html><body style='font-family:sans-serif;background:#090b0d;color:#eef2f5;padding:24px'><h2 style='color:#e03a3a'>Configuration Error</h2><p>Discord auth is not configured on the server.</p></body></html>",
+      { status: 503, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } },
+    );
+  }
+
+  let discordUser: { id: string; username: string } | null = null;
+  try {
+    const tokenRes = await fetch("https://discord.com/api/oauth2/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: redirectUri,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!tokenRes.ok) {
+      return new Response(
+        "<html><body style='font-family:sans-serif;background:#090b0d;color:#eef2f5;padding:24px'><h2 style='color:#e03a3a'>Authorization Failed</h2><p>Could not exchange authorization code with Discord.</p></body></html>",
+        { status: 502, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } },
+      );
+    }
+    const tokenPayload = (await tokenRes.json()) as { access_token?: string; token_type?: string };
+    const accessToken = tokenPayload.access_token;
+    if (!accessToken) {
+      return new Response(
+        "<html><body style='font-family:sans-serif;background:#090b0d;color:#eef2f5;padding:24px'><h2 style='color:#e03a3a'>Authorization Failed</h2><p>No access token returned by Discord.</p></body></html>",
+        { status: 502, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } },
+      );
+    }
+
+    const userRes = await fetch("https://discord.com/api/users/@me", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!userRes.ok) {
+      return new Response(
+        "<html><body style='font-family:sans-serif;background:#090b0d;color:#eef2f5;padding:24px'><h2 style='color:#e03a3a'>Authorization Failed</h2><p>Could not fetch Discord user profile.</p></body></html>",
+        { status: 502, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } },
+      );
+    }
+    const userPayload = (await userRes.json()) as { id?: string; username?: string };
+    if (!userPayload.id || !userPayload.username) {
+      return new Response(
+        "<html><body style='font-family:sans-serif;background:#090b0d;color:#eef2f5;padding:24px'><h2 style='color:#e03a3a'>Authorization Failed</h2><p>Incomplete Discord user profile.</p></body></html>",
+        { status: 502, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } },
+      );
+    }
+    discordUser = { id: userPayload.id, username: userPayload.username };
+  } catch {
+    return new Response(
+      "<html><body style='font-family:sans-serif;background:#090b0d;color:#eef2f5;padding:24px'><h2 style='color:#e03a3a'>Network Error</h2><p>Could not reach Discord. Please try again.</p></body></html>",
+      { status: 502, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } },
+    );
+  }
+
+  // Check if this Discord account is already linked to an SCCT account.
+  const existing = await env.DB.prepare(
+    "SELECT id, username FROM accounts WHERE discord_id = ?",
+  )
+    .bind(discordUser.id)
+    .first<{ id: string; username: string }>();
+
+  if (existing) {
+    // Already linked — issue a fresh token so the user is signed in.
+    const rawToken = randomHex(32);
+    const tokenHash = await sha256Hex(rawToken);
+    await env.DB.prepare("UPDATE accounts SET token_hash = ?, last_seen = ? WHERE id = ?")
+      .bind(tokenHash, new Date(nowMs).toISOString(), existing.id)
+      .run();
+    // Return a page that posts the token back to the launcher via a redirect.
+    const safeName = escapeHtml(existing.username);
+    return new Response(
+      `<!DOCTYPE html><html><head><meta charset="utf-8"><title>SCCT Co-op — Discord Linked</title></head>`
+      + `<body style="font-family:sans-serif;background:#090b0d;color:#eef2f5;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">`
+      + `<div style="text-align:center;padding:32px;border-radius:8px;background:#12161a;max-width:420px">`
+      + `<h2 style="color:#64dc4b;margin:0 0 16px">Welcome Back, ${safeName}</h2>`
+      + `<p style="color:#98a4b0;margin:0 0 8px">Your Discord account is already linked.</p>`
+      + `<p style="color:#98a4b0;margin:0">You can close this page and return to the launcher.</p>`
+      + `</div></body></html>`,
+      { status: 200, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } },
+    );
+  }
+
+  // New link: generate a one-time link token the user copies into the launcher.
+  const linkToken = randomHex(32);
+  const linkTokenHash = await sha256Hex(linkToken);
+  const nowIso = new Date(nowMs).toISOString();
+  const expiresIso = new Date(nowMs + DISCORD_LINK_TTL_MS).toISOString();
+
+  await env.DB.prepare("DELETE FROM discord_link_nonces WHERE state = ?").bind(state).run();
+  await env.DB.prepare(
+    `INSERT INTO discord_link_nonces (state, link_token_hash, discord_id, discord_username, expires_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(state, linkTokenHash, discordUser.id, discordUser.username, expiresIso, nowIso)
+    .run();
+
+  const safeDiscordName = escapeHtml(discordUser.username);
+  const safeLinkToken = escapeHtml(linkToken);
+  return new Response(
+    `<!DOCTYPE html><html><head><meta charset="utf-8"><title>SCCT Co-op — Link Discord</title></head>`
+    + `<body style="font-family:sans-serif;background:#090b0d;color:#eef2f5;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">`
+    + `<div style="text-align:center;padding:32px;border-radius:8px;background:#12161a;max-width:480px">`
+    + `<h2 style="color:#64dc4b;margin:0 0 12px">Discord Verified</h2>`
+    + `<p style="color:#eef2f5;margin:0 0 4px">Signed in as <b>${safeDiscordName}</b></p>`
+    + `<p style="color:#98a4b0;margin:0 0 20px">Copy the code below into the launcher to link your account:</p>`
+    + `<div style="background:#090b0d;border:1px solid #2a3038;border-radius:6px;padding:14px;margin:0 0 20px">`
+    + `<code style="font-size:18px;color:#64dc4b;word-break:break-all;user-select:all">${safeLinkToken}</code></div>`
+    + `<p style="color:#98a4b0;font-size:13px;margin:0">This code expires in 10 minutes.</p>`
+    + `</div></body></html>`,
+    { status: 200, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } },
+  );
+}
+
+async function discordLinkV2(request: Request, env: Env, account: OnlineAccountRow): Promise<Response> {
+  const body = await readJsonBody(request);
+  if (body instanceof Response) return body;
+
+  const linkToken = String(body.link_token ?? "").trim();
+  if (!linkToken || linkToken.length < 32) {
+    return jsonRes(400, { ok: false, error: "Link token is required." });
+  }
+
+  const linkTokenHash = await sha256Hex(linkToken);
+  const nowMs = Date.now();
+
+  // Clean expired nonces.
+  await env.DB.prepare("DELETE FROM discord_link_nonces WHERE expires_at < ?")
+    .bind(new Date(nowMs).toISOString())
+    .run();
+
+  const nonce = await env.DB.prepare(
+    "SELECT discord_id, discord_username FROM discord_link_nonces WHERE link_token_hash = ?",
+  )
+    .bind(linkTokenHash)
+    .first<{ discord_id: string; discord_username: string }>();
+
+  if (!nonce) {
+    return jsonRes(400, { ok: false, error: "Invalid or expired link token. Request a new link from Settings." });
+  }
+
+  // Check that neither the SCCT account nor the Discord account is already linked elsewhere.
+  const discordConflict = await env.DB.prepare(
+    "SELECT id FROM accounts WHERE discord_id = ? AND id != ?",
+  )
+    .bind(nonce.discord_id, account.id)
+    .first<{ id: string }>();
+  if (discordConflict) {
+    return jsonRes(409, { ok: false, error: "This Discord account is already linked to another SCCT account." });
+  }
+
+  const scctConflict = await env.DB.prepare(
+    "SELECT discord_id FROM accounts WHERE id = ? AND discord_id IS NOT NULL",
+  )
+    .bind(account.id)
+    .first<{ discord_id: string }>();
+  if (scctConflict) {
+    return jsonRes(409, { ok: false, error: "Your SCCT account already has a Discord account linked. Unlink it first." });
+  }
+
+  await env.DB.prepare("UPDATE accounts SET discord_id = ?, discord_username = ? WHERE id = ?")
+    .bind(nonce.discord_id, nonce.discord_username, account.id)
+    .run();
+  await env.DB.prepare("DELETE FROM discord_link_nonces WHERE link_token_hash = ?").bind(linkTokenHash).run();
+
+  return jsonRes(200, {
+    ok: true,
+    discord: { id: nonce.discord_id, username: nonce.discord_username },
+  });
+}
+
+async function discordUnlinkV2(db: D1Database, account: OnlineAccountRow): Promise<Response> {
+  await db.prepare("UPDATE accounts SET discord_id = NULL, discord_username = NULL WHERE id = ?")
+    .bind(account.id)
+    .run();
+  return jsonRes(200, { ok: true });
 }

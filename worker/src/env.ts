@@ -10,4 +10,7 @@ export interface Env {
   CONTENT_SCDA_ASSET_ID?: string;
   CF_TURN_TOKEN_ID?: string;
   CF_TURN_API_TOKEN?: string;
+  DISCORD_CLIENT_ID?: string;
+  DISCORD_CLIENT_SECRET?: string;
+  DISCORD_REDIRECT_URI?: string;
 }
