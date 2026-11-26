@@ -25,7 +25,7 @@ if exist dist\SCCT-Launcher rmdir /s /q dist\SCCT-Launcher
 if not exist "dist\SCCT-Launcher\_internal\" (echo Build output incomplete. & pause & exit /b 1)
 
 rem Optional installer + delta updates (needs: dotnet tool install -g vpk)
-where vpk >nul 2>nul && vpk pack --packId EchelonRe.SCCTCoopLauncher --packVersion 2.1.0 --runtime win-x64 --packDir dist\SCCT-Launcher --mainExe SCCT-Launcher.exe --icon static\assets\scct_icon.ico --outputDir Releases
+where vpk >nul 2>nul && vpk pack --packId EchelonRe.SCCTCoopLauncher --packVersion 2.2.0 --runtime win-x64 --packDir dist\SCCT-Launcher --mainExe SCCT-Launcher.exe --icon static\assets\scct_icon.ico --outputDir Releases
 
 echo.
 echo Built: %~dp0dist\SCCT-Launcher\SCCT-Launcher.exe

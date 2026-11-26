@@ -643,7 +643,7 @@ async function uninstallPack(id) {
 async function checkUpdates(silent = false) {
   const { data } = await api("/api/update/check");
   if (!data.ok) return;
-  setText($("st-ver"), data.current_version || "2.1.0");
+  setText($("st-ver"), data.current_version || "2.2.0");
   const capable = data.update_capable !== false && data.installed;
   if ($("btn-check-upd")) show($("btn-check-upd"), capable);
   if (data.update_available) {
