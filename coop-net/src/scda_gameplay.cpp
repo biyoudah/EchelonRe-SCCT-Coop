@@ -20,14 +20,20 @@ using SpeechDispatcherTriggerFn = int(__fastcall*)(void* self, void* edx, void* 
                                                  void* out_pattern);
 using SetLocationFn = int(__thiscall*)(void* actor, const float* dest_xyz, int bNoCheck);
 using GetOtherPlayerFn = void*(__thiscall*)(void* epc);
+using PlayAnimCoreFn = int(__thiscall*)(void* mesh_inst, int channel, uint32_t anim_fname, int* out_seq,
+                                        int* out_flags, int arg5, int rate, int bLoop, int tween, int flags);
+using AppStrihashFn = uint32_t(__cdecl*)(const wchar_t* str);
 
 constexpr uintptr_t kRvaSetLocation = 0x90230u;
 constexpr uintptr_t kRvaGetOtherPlayer = 0x1037C0u;
 constexpr uintptr_t kRvaGameEngineTick = 0x13DD30u;
+constexpr uintptr_t kRvaPlayAnimCore = 0x158010u;
 constexpr uintptr_t kRvaCoopDispatchIsAvailable = 0x301BF0u;
 constexpr uintptr_t kRvaCoopDispatchInitInteract = 0x302580u;
 constexpr uintptr_t kRvaENpcZoneGetDescription = 0x304170u;
 constexpr uintptr_t kRvaSpeechDispatcherTrigger = 0x30EE40u;
+constexpr uintptr_t kRvaAppStrihash = 0x3D4230u;
+constexpr uintptr_t kRvaFNameHash = 0xA09FB8u;
 
 constexpr float kB2BLimitSentinel = 404.25f;
 constexpr float kDualInterroPartnerRadius = 250.0f;
@@ -54,6 +60,7 @@ struct B2BState {
     float cur_z = 0.0f;
     DWORD last_tick_ms = 0;
     DWORD wait_start_ms = 0;
+    bool loop_anim_started = false;
     float p1_wait_pos[3]{};
 };
 
@@ -100,6 +107,67 @@ int SafeSetActorLocation(void* actor, const float* xyz, int bNoCheck) {
     return set_loc(actor, xyz, bNoCheck);
 }
 
+int SafeMoveActorLocation(void* actor, const float* xyz) {
+    if (SafeSetActorLocation(actor, xyz, 0) != 0) {
+        return 1;
+    }
+    return SafeSetActorLocation(actor, xyz, 1);
+}
+
+void ZeroPawnVelocity(uint8_t* pawn) {
+    if (!IsValidPtr(pawn)) {
+        return;
+    }
+    auto* vel = reinterpret_cast<float*>(pawn + 0x100);
+    vel[0] = 0.0f;
+    vel[1] = 0.0f;
+    vel[2] = 0.0f;
+}
+
+uint32_t FindLoadedFName(const wchar_t* name) {
+    if (!name || !*name || g_exe_base == 0) {
+        return 0;
+    }
+    auto strihash = reinterpret_cast<AppStrihashFn>(g_exe_base + kRvaAppStrihash);
+    auto** hash_table = reinterpret_cast<uint8_t**>(g_exe_base + kRvaFNameHash);
+    const uint32_t bucket = strihash(name) & 0xFFFu;
+    uint8_t* entry = hash_table[bucket];
+    for (int guard = 0; guard < 128 && IsValidPtr(entry); ++guard) {
+        const auto* entry_name = reinterpret_cast<const wchar_t*>(entry + 0x0C);
+        if (_wcsicmp(entry_name, name) == 0) {
+            return *reinterpret_cast<const uint32_t*>(entry);
+        }
+        entry = *reinterpret_cast<uint8_t**>(entry + 0x08);
+    }
+    return 0;
+}
+
+void TryPlayB2BAnim(uint8_t* pawn, const wchar_t* anim_name, int bLoop) {
+    if (!IsValidPtr(pawn) || g_exe_base == 0) {
+        return;
+    }
+    uint8_t* mesh_inst = *reinterpret_cast<uint8_t**>(pawn + 0x518);
+    if (!IsValidPtr(mesh_inst)) {
+        return;
+    }
+    const uint32_t fname = FindLoadedFName(anim_name);
+    if (fname == 0) {
+        return;
+    }
+    int out_seq = -1;
+    int out_flags = 0;
+    auto play_anim = reinterpret_cast<PlayAnimCoreFn>(g_exe_base + kRvaPlayAnimCore);
+    play_anim(mesh_inst, 0, fname, &out_seq, &out_flags, -1, 1, bLoop, 0, 0x1001);
+}
+
+bool IsAuthorizedPawnForMove(uint8_t* pawn) {
+    if (!IsValidPtr(pawn)) {
+        return false;
+    }
+    uint8_t* local_pawn = IsValidPtr(g_local_epc) ? *reinterpret_cast<uint8_t**>(g_local_epc + 0x4A0) : nullptr;
+    return !IsValidPtr(local_pawn) || pawn == local_pawn;
+}
+
 void* SafeGetOtherPlayer(void* epc) {
     if (!IsValidPtr(epc) || g_exe_base == 0) {
         return nullptr;
@@ -123,11 +191,7 @@ bool IsB2BVolume(uint8_t* vol) {
         return false;
     }
     const float limit = *reinterpret_cast<float*>(vol + 0x3AC);
-    if (std::fabs(limit - kB2BLimitSentinel) < 0.5f) {
-        return true;
-    }
-    const float rope = *reinterpret_cast<float*>(vol + 0x3B0);
-    return rope > 600.0f && rope < 1500.0f;
+    return std::fabs(limit - kB2BLimitSentinel) < 0.5f;
 }
 
 bool IsPartnerWaitingInVolume(uint8_t* vol, uint8_t* epc, uint8_t** out_partner_epc) {
@@ -160,7 +224,11 @@ void ResetB2BState() {
 }
 
 void BeginB2BClimb(uint8_t* vol, uint8_t* p1_epc, uint8_t* p2_epc, float start_z) {
+    if (!IsValidPtr(vol)) {
+        return;
+    }
     const auto* vol_loc = reinterpret_cast<const float*>(vol + 0xE8);
+    const int32_t vol_yaw = *reinterpret_cast<const int32_t*>(vol + 0xF8);
     const float rope = *reinterpret_cast<float*>(vol + 0x3B0);
     float fx = 1.0f, fy = 0.0f;
     ComputeVolAxis(vol, &fx, &fy);
@@ -173,19 +241,30 @@ void BeginB2BClimb(uint8_t* vol, uint8_t* p1_epc, uint8_t* p2_epc, float start_z
     g_b2b.cur_z = start_z;
     g_b2b.top_z = vol_loc[2] + rope * 0.5f + 56.0f;
     g_b2b.last_tick_ms = GetTickCount();
+    g_b2b.loop_anim_started = false;
 
     if (IsValidPtr(p1_epc)) {
         auto* p1_pawn = *reinterpret_cast<uint8_t**>(p1_epc + 0x4A0);
         if (IsValidPtr(p1_pawn)) {
-            const float pos1[3] = {vol_loc[0] - fx * 26.0f, vol_loc[1] - fy * 26.0f, start_z};
-            SafeSetActorLocation(p1_pawn, pos1, 1);
+            ZeroPawnVelocity(p1_pawn);
+            *reinterpret_cast<int32_t*>(p1_pawn + 0xF8) = vol_yaw + 32768;
+            if (IsAuthorizedPawnForMove(p1_pawn)) {
+                const float pos1[3] = {vol_loc[0] - fx * 26.0f, vol_loc[1] - fy * 26.0f, start_z};
+                SafeMoveActorLocation(p1_pawn, pos1);
+            }
+            TryPlayB2BAnim(p1_pawn, L"coopbktobk_climb_ini_p", 0);
         }
     }
     if (IsValidPtr(p2_epc)) {
         auto* p2_pawn = *reinterpret_cast<uint8_t**>(p2_epc + 0x4A0);
         if (IsValidPtr(p2_pawn)) {
-            const float pos2[3] = {vol_loc[0] + fx * 26.0f, vol_loc[1] + fy * 26.0f, start_z};
-            SafeSetActorLocation(p2_pawn, pos2, 1);
+            ZeroPawnVelocity(p2_pawn);
+            *reinterpret_cast<int32_t*>(p2_pawn + 0xF8) = vol_yaw;
+            if (IsAuthorizedPawnForMove(p2_pawn)) {
+                const float pos2[3] = {vol_loc[0] + fx * 26.0f, vol_loc[1] + fy * 26.0f, start_z};
+                SafeMoveActorLocation(p2_pawn, pos2);
+            }
+            TryPlayB2BAnim(p2_pawn, L"coopbktobk_climb_ini_p", 0);
         }
     }
 
@@ -247,8 +326,12 @@ void PlaceAtShaftExit(uint8_t* pawn, uint8_t* vol, float top_z, float sign) {
     float fx = 1.0f, fy = 0.0f;
     ComputeVolAxis(vol, &fx, &fy);
 
-    const float fallback[3] = {vol_loc[0] + fx * 68.0f * sign, vol_loc[1] + fy * 68.0f * sign, top_z + 24.0f};
-    SafeSetActorLocation(pawn, fallback, 1);
+    ZeroPawnVelocity(pawn);
+    if (IsAuthorizedPawnForMove(pawn)) {
+        const float exit_pos[3] = {vol_loc[0] + fx * 68.0f * sign, vol_loc[1] + fy * 68.0f * sign, top_z + 24.0f};
+        SafeMoveActorLocation(pawn, exit_pos);
+    }
+    TryPlayB2BAnim(pawn, L"coopbktobk_climb_end_p", 0);
 }
 
 int __fastcall Hook_CoopDispatchIsAvailable(void* self, void* edx) {
@@ -670,12 +753,46 @@ void __fastcall Hook_GameEngineTick(void* self, void* edx, float dt) {
     ScdaGameplayTick(dt, IsValidPtr(glevel));
 }
 
+uint8_t* ResolveRvaOrScan(uintptr_t exe_base, uintptr_t rva, const uint8_t* exp, size_t exp_len) {
+    auto* primary = reinterpret_cast<uint8_t*>(exe_base + rva);
+    if (std::memcmp(primary, exp, exp_len) == 0) {
+        return primary;
+    }
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(exe_base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+        return nullptr;
+    }
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS32*>(exe_base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) {
+        return nullptr;
+    }
+    const auto* sec = IMAGE_FIRST_SECTION(nt);
+    uint8_t* unique_hit = nullptr;
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++sec) {
+        if ((sec->Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0 || sec->Misc.VirtualSize < exp_len) {
+            continue;
+        }
+        auto* start = reinterpret_cast<uint8_t*>(exe_base + sec->VirtualAddress);
+        const size_t limit = sec->Misc.VirtualSize - exp_len;
+        for (size_t off = 0; off <= limit; ++off) {
+            if (std::memcmp(start + off, exp, exp_len) == 0) {
+                if (unique_hit != nullptr) {
+                    return nullptr;
+                }
+                unique_hit = start + off;
+            }
+        }
+    }
+    return unique_hit;
+}
+
 bool InstallGameplayHook(const char* name, uintptr_t rva, const uint8_t* exp, size_t exp_len, void* detour,
                          void** orig) {
-    auto* target = reinterpret_cast<uint8_t*>(g_exe_base + rva);
-    if (std::memcmp(target, exp, exp_len) != 0) {
+    uint8_t* target = ResolveRvaOrScan(g_exe_base, rva, exp, exp_len);
+    if (!target) {
+        auto* raw = reinterpret_cast<const uint8_t*>(g_exe_base + rva);
         ScdaLogMsg("scda_hook_%s_prologue_mismatch got=%02X_%02X_%02X_%02X", name,
-                   target[0], target[1], target[2], target[3]);
+                   raw[0], raw[1], raw[2], raw[3]);
         return false;
     }
     const MH_STATUS c = MH_CreateHook(target, detour, orig);
@@ -813,8 +930,13 @@ void ScdaGameplayTick(float dt, bool in_level) {
     }
 
     if (g_b2b.phase == 2) {
+        if (!IsValidPtr(g_b2b.active_vol)) {
+            ResetB2BState();
+            return;
+        }
         g_b2b.cur_z += 165.0f * step_dt;
         const auto* vol_loc = reinterpret_cast<const float*>(g_b2b.active_vol + 0xE8);
+        const int32_t vol_yaw = *reinterpret_cast<const int32_t*>(g_b2b.active_vol + 0xF8);
         float fx = 1.0f, fy = 0.0f;
         ComputeVolAxis(g_b2b.active_vol, &fx, &fy);
 
@@ -829,13 +951,32 @@ void ScdaGameplayTick(float dt, bool in_level) {
             return;
         }
 
+        const bool start_loop = !g_b2b.loop_anim_started && (g_b2b.cur_z > g_b2b.start_z + 24.0f);
+        if (start_loop) {
+            g_b2b.loop_anim_started = true;
+        }
+
         if (IsValidPtr(p1_pawn)) {
-            const float pos1[3] = {vol_loc[0] - fx * 26.0f, vol_loc[1] - fy * 26.0f, g_b2b.cur_z};
-            SafeSetActorLocation(p1_pawn, pos1, 1);
+            ZeroPawnVelocity(p1_pawn);
+            *reinterpret_cast<int32_t*>(p1_pawn + 0xF8) = vol_yaw + 32768;
+            if (IsAuthorizedPawnForMove(p1_pawn)) {
+                const float pos1[3] = {vol_loc[0] - fx * 26.0f, vol_loc[1] - fy * 26.0f, g_b2b.cur_z};
+                SafeMoveActorLocation(p1_pawn, pos1);
+            }
+            if (start_loop) {
+                TryPlayB2BAnim(p1_pawn, L"coopbktobk_climb_loop_p", 1);
+            }
         }
         if (IsValidPtr(p2_pawn)) {
-            const float pos2[3] = {vol_loc[0] + fx * 26.0f, vol_loc[1] + fy * 26.0f, g_b2b.cur_z};
-            SafeSetActorLocation(p2_pawn, pos2, 1);
+            ZeroPawnVelocity(p2_pawn);
+            *reinterpret_cast<int32_t*>(p2_pawn + 0xF8) = vol_yaw;
+            if (IsAuthorizedPawnForMove(p2_pawn)) {
+                const float pos2[3] = {vol_loc[0] + fx * 26.0f, vol_loc[1] + fy * 26.0f, g_b2b.cur_z};
+                SafeMoveActorLocation(p2_pawn, pos2);
+            }
+            if (start_loop) {
+                TryPlayB2BAnim(p2_pawn, L"coopbktobk_climb_loop_p", 1);
+            }
         }
     }
 }

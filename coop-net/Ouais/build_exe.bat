@@ -18,6 +18,7 @@ if exist dist\SCCT-Launcher rmdir /s /q dist\SCCT-Launcher
   --name SCCT-Launcher --icon "%~dp0static\assets\scct_icon.ico" ^
   --workpath "%TEMP%\scct-pyi-build" --distpath "%~dp0dist" ^
   --add-data "%~dp0static;static" --add-data "%~dp0mod;mod" ^
+  --add-binary "%~dp0scct_p2p_x64.dll;." ^
   --hidden-import=clr_loader --hidden-import=pythonnet --hidden-import=webview ^
   start_launcher.py || (echo Build failed. & pause & exit /b 1)
 

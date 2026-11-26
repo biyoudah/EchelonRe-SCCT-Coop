@@ -1,5 +1,6 @@
 import { bearer, randomHex, sha256Hex } from "./book.js";
 import type { Env } from "./env.js";
+import { handleTurnCredentials } from "./turn.js";
 
 const JSON_HEADERS: Record<string, string> = {
   "content-type": "application/json; charset=utf-8",
@@ -326,7 +327,10 @@ async function authenticateBearer(request: Request, db: D1Database, nowMs: numbe
     .bind(tokenHash)
     .first<OnlineAccountRow>();
   if (!row || row.email_verified !== 1) return null;
-  await db.prepare("UPDATE accounts SET last_seen = ? WHERE id = ?").bind(new Date(nowMs).toISOString(), row.id).run();
+  const lastSeenMs = row.last_seen ? Date.parse(row.last_seen) : NaN;
+  if (!Number.isFinite(lastSeenMs) || nowMs - lastSeenMs >= 180_000) {
+    await db.prepare("UPDATE accounts SET last_seen = ? WHERE id = ?").bind(new Date(nowMs).toISOString(), row.id).run();
+  }
   return row;
 }
 
@@ -361,13 +365,20 @@ export async function handleOnlineV2(
     return stub.fetch(new Request(doUrl.toString(), request));
   }
 
+  if (url.pathname === "/v2/turn/credentials" && request.method === "POST") {
+    const account = await authenticateBearer(request, env.DB, nowMs);
+    if (!account) return jsonRes(401, { ok: false, error: "Authentication required." });
+    const turnRes = await handleTurnCredentials(account.id, env, nowMs);
+    return jsonRes(turnRes.status, turnRes.body);
+  }
+
   if (url.pathname === "/v2/content/scda-coop-maps" && request.method === "GET") {
     const account = await authenticateBearer(request, env.DB, nowMs);
     if (!account) return jsonRes(401, { ok: false, error: "Authentication required." });
     const token = (env.CONTENT_GITHUB_TOKEN ?? "").trim();
     if (!token) return jsonRes(503, { ok: false, error: "Content delivery is not configured." });
     const repo = (env.CONTENT_GITHUB_REPO ?? "biyoudah/Splinter-Cell-Chaos-Theory-Echelon-Re-Online-Coop").trim();
-    const assetId = (env.CONTENT_SCDA_ASSET_ID ?? "795973330").trim();
+    const assetId = (env.CONTENT_SCDA_ASSET_ID ?? "797182419").trim();
     const assetUrl = `https://api.github.com/repos/${repo}/releases/assets/${assetId}`;
     const ghRes = await fetch(assetUrl, {
       method: "GET",

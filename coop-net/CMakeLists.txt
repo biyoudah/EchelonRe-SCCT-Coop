@@ -1,8 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 project(scct_coop_net VERSION 0.1.0 LANGUAGES C CXX)
 
+option(SCCT_BUILD_P2P_ONLY "Build only scct_p2p (for 64-bit Python host)" OFF)
+
 # splintercell3.exe is 32-bit. Configure with: cmake -S coop-net -B coop-net/build -A Win32
-if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+if(NOT SCCT_BUILD_P2P_ONLY AND NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "scct-coop-net must be built as 32-bit (cmake -A Win32).")
 endif()
 
@@ -17,6 +19,40 @@ add_compile_definitions(
 )
 
 set(MINHOOK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/minhook)
+set(JUICE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libjuice)
+set(OPUS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/opus)
+set(RNNOISE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/rnnoise)
+set(MINIAUDIO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniaudio)
+
+# Build libjuice static library (MPL-2.0) for P2P ICE/STUN/TURN
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(NO_TESTS ON CACHE BOOL "" FORCE)
+set(NO_SERVER ON CACHE BOOL "" FORCE)
+add_subdirectory(${JUICE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/libjuice EXCLUDE_FROM_ALL)
+
+# Build Opus static library (BSD-3-Clause)
+set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+add_subdirectory(${OPUS_DIR} ${CMAKE_CURRENT_BINARY_DIR}/opus EXCLUDE_FROM_ALL)
+
+# Build RNNoise static library (BSD-3-Clause)
+add_library(scct_rnnoise STATIC
+    ${RNNOISE_DIR}/src/celt_lpc.c
+    ${RNNOISE_DIR}/src/denoise.c
+    ${RNNOISE_DIR}/src/kiss_fft.c
+    ${RNNOISE_DIR}/src/nnet.c
+    ${RNNOISE_DIR}/src/nnet_default.c
+    ${RNNOISE_DIR}/src/parse_lpcnet_weights.c
+    ${RNNOISE_DIR}/src/pitch.c
+    ${RNNOISE_DIR}/src/rnn.c
+    ${RNNOISE_DIR}/src/rnnoise_data.c
+    ${RNNOISE_DIR}/src/rnnoise_tables.c
+)
+target_include_directories(scct_rnnoise PUBLIC ${RNNOISE_DIR}/include PRIVATE ${RNNOISE_DIR}/src)
+target_compile_definitions(scct_rnnoise PRIVATE RNNOISE_BUILD)
 
 add_library(scct_minhook STATIC
     ${MINHOOK_DIR}/src/buffer.c
@@ -36,13 +72,41 @@ add_library(ScctCoopNet SHARED
     src/scda_hooks.cpp
     src/scda_hooks.h
     src/transport.cpp
+    src/voice_audio.cpp
+    src/voice_audio.h
     ScctCoopNet.def
 )
-target_include_directories(ScctCoopNet PRIVATE ${MINHOOK_DIR}/include)
-target_link_libraries(ScctCoopNet PRIVATE scct_minhook ws2_32 bcrypt winmm winhttp)
+target_include_directories(ScctCoopNet PRIVATE
+    ${MINHOOK_DIR}/include
+    ${MINIAUDIO_DIR}
+    ${OPUS_DIR}/include
+    ${RNNOISE_DIR}/include
+)
+target_link_libraries(ScctCoopNet PRIVATE scct_minhook opus scct_rnnoise ws2_32 bcrypt winmm winhttp)
 set_target_properties(ScctCoopNet PROPERTIES
     PREFIX ""
     OUTPUT_NAME "ScctCoopNet"
+    SUFFIX ".dll"
+)
+
+add_library(scct_p2p SHARED
+    src/p2p_ice.cpp
+)
+target_include_directories(scct_p2p PRIVATE ${JUICE_DIR}/include)
+target_link_libraries(scct_p2p PRIVATE LibJuice::LibJuiceStatic ws2_32 bcrypt)
+set_target_properties(scct_p2p PROPERTIES
+    PREFIX ""
+    OUTPUT_NAME "scct_p2p"
+    SUFFIX ".dll"
+)
+
+add_library(AVIFIL32 SHARED
+    src/avifil32_proxy.cpp
+    AVIFIL32.def
+)
+set_target_properties(AVIFIL32 PROPERTIES
+    PREFIX ""
+    OUTPUT_NAME "AVIFIL32"
     SUFFIX ".dll"
 )
 
@@ -73,12 +137,15 @@ add_custom_command(TARGET ScctCoopNet POST_BUILD
 
 if(MSVC)
     target_compile_options(ScctCoopNet PRIVATE /W3 /EHsc /utf-8)
+    target_compile_options(scct_p2p PRIVATE /W3 /EHsc /utf-8)
     target_compile_options(scct-coop-launch PRIVATE /W3 /EHsc /utf-8)
     target_compile_options(scct-lan-relay PRIVATE /W3 /EHsc /utf-8)
     target_compile_options(scct-relay-test PRIVATE /W3 /EHsc /utf-8)
     target_compile_options(scct-hook-path PRIVATE /W3 /EHsc /utf-8)
     target_compile_options(scct_minhook PRIVATE /W3)
+    target_compile_options(scct_rnnoise PRIVATE /W0)
     # The host exe has no Control Flow Guard. Keep the loader stub's indirect calls plain.
     target_link_options(ScctCoopNet PRIVATE /GUARD:NO)
+    target_link_options(scct_p2p PRIVATE /GUARD:NO)
     target_link_options(scct-coop-launch PRIVATE /GUARD:NO)
 endif()

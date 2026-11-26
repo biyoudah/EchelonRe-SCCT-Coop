@@ -124,7 +124,7 @@ DEFAULT_CONTENT_CATALOG = [
         "credits": "SCDA assets ported using SCDA-XBERecomp by TGP482 (https://github.com/TGP482/SCDA-XBERecomp)",
         "size_mb": 697,
         "download_url": "https://scct-revival-directory.echelonre.workers.dev/v2/content/scda-coop-maps",
-        "sha256": "59344ce4acf4884a4d643000fc639f28f5bb7440a7856f110611339e56ecc40f",
+        "sha256": "b9b25d3eec09ccfa3a4d3b521a705ebe2dccb14850ea559f1c2c7531fa8b6ea7",
         "check_files": [f"Data/Maps/{m}.scl" for m in SCDA_ORDERED_MAPS] + [
             "Data/Sounds/SCDA_MAPS.SM0",
             "System/Localization/scda_override.int",
@@ -464,6 +464,8 @@ def inspect_and_install_mod(exe_path, install=True):
     game_dir = os.path.dirname(clean_exe)
     src_dll = os.path.join(BUILD_RELEASE_DIR, "ScctCoopNet.dll")
     dst_dll = os.path.join(game_dir, "ScctCoopNet.dll")
+    src_proxy = os.path.join(BUILD_RELEASE_DIR, "AVIFIL32.dll")
+    dst_proxy = os.path.join(game_dir, "AVIFIL32.dll")
     src_launch = os.path.join(BUILD_RELEASE_DIR, "scct-coop-launch.exe")
     dst_launch = os.path.join(game_dir, "scct-coop-launch.exe")
     src_ini = next((os.path.join(d, "scct-coop-net.ini") for d in INI_SOURCE_DIRS if os.path.isfile(os.path.join(d, "scct-coop-net.ini"))), "")
@@ -475,6 +477,11 @@ def inspect_and_install_mod(exe_path, install=True):
             if need_dll:
                 shutil.copy2(src_dll, dst_dll)
                 info["installed_now"].append("ScctCoopNet.dll")
+        if os.path.isfile(src_proxy):
+            need_proxy = (not os.path.isfile(dst_proxy)) or (file_sha256(src_proxy) != file_sha256(dst_proxy))
+            if need_proxy:
+                shutil.copy2(src_proxy, dst_proxy)
+                info["installed_now"].append("AVIFIL32.dll")
         if os.path.isfile(src_launch):
             need_launch = (not os.path.isfile(dst_launch)) or (file_sha256(src_launch) != file_sha256(dst_launch))
             if need_launch:
@@ -1684,6 +1691,7 @@ def update_check(sess):
         "ok": True,
         "current_version": APP_VERSION,
         "installed": False,
+        "update_capable": False,
         "update_available": False,
         "target_version": "",
         "error": "",
@@ -1691,13 +1699,22 @@ def update_check(sess):
     try:
         import velopack
         mgr = velopack.UpdateManager(UPDATE_FEED_URL)
-        res["installed"] = bool(mgr.is_installed())
+        installed = bool(mgr.is_installed())
+        res["installed"] = installed
+        res["update_capable"] = installed
+        if not installed:
+            return jsonify(res)
         info = mgr.check_for_updates()
         if info is not None and getattr(info, "TargetFullRelease", None) is not None:
             res["update_available"] = True
             res["target_version"] = str(getattr(info.TargetFullRelease, "Version", ""))
     except Exception as exc:
-        res["error"] = str(exc)
+        msg = str(exc)
+        if "notinstalled" in msg.lower().replace(" ", ""):
+            res["installed"] = False
+            res["update_capable"] = False
+        else:
+            res["error"] = msg
     return jsonify(res)
 
 

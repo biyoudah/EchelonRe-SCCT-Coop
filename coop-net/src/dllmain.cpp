@@ -12,6 +12,7 @@
 #include <intrin.h>
 #include <mmsystem.h>
 #include <winhttp.h>
+#include "voice_audio.h"
 
 #include "scda_hooks.h"
 #include "transport.h"
@@ -305,6 +306,38 @@ HRESULT STDMETHODCALLTYPE Hook_Present(IDirect3DDevice9* dev, const RECT* src, c
             }
         }
     }
+    // Configurable frame-rate cap (SCCT_MAX_FPS, default 60; 0 disables) to prevent
+    // high-FPS physics/audio desync in Splinter Cell Chaos Theory.
+    {
+        static int s_max_fps = -1;
+        static LARGE_INTEGER s_freq{};
+        static LARGE_INTEGER s_next_frame{};
+        if (s_max_fps < 0) {
+            char fps_buf[32]{};
+            const DWORD fn = GetEnvironmentVariableA("SCCT_MAX_FPS", fps_buf, sizeof(fps_buf));
+            s_max_fps = (fn > 0 && fn < sizeof(fps_buf)) ? std::atoi(fps_buf) : 60;
+            if (s_max_fps < 0) {
+                s_max_fps = 0;
+            }
+            QueryPerformanceFrequency(&s_freq);
+            QueryPerformanceCounter(&s_next_frame);
+        }
+        if (s_max_fps > 0 && s_freq.QuadPart > 0) {
+            const LONGLONG frame_ticks = s_freq.QuadPart / s_max_fps;
+            LARGE_INTEGER now_qpc{};
+            QueryPerformanceCounter(&now_qpc);
+            if (now_qpc.QuadPart < s_next_frame.QuadPart) {
+                const LONGLONG rem_ms = ((s_next_frame.QuadPart - now_qpc.QuadPart) * 1000LL) / s_freq.QuadPart;
+                if (rem_ms > 2) {
+                    Sleep(static_cast<DWORD>(rem_ms - 1));
+                }
+                do {
+                    QueryPerformanceCounter(&now_qpc);
+                } while (now_qpc.QuadPart < s_next_frame.QuadPart);
+            }
+            s_next_frame.QuadPart = now_qpc.QuadPart + frame_ticks;
+        }
+    }
     return g_Present(dev, src, dst, hWnd, dirty);
 }
 
@@ -366,8 +399,20 @@ void* WINAPI Hook_Direct3DCreate9(UINT sdkVersion) {
     return g_Direct3DCreate9 ? g_Direct3DCreate9(sdkVersion) : nullptr;
 }
 
+bool AllowMultiInstance() {
+    static LONG s_cached = -1;
+    LONG v = InterlockedCompareExchange(&s_cached, -1, -1);
+    if (v < 0) {
+        wchar_t buf[16]{};
+        const DWORD n = GetEnvironmentVariableW(L"SCCT_ALLOW_MULTI_INSTANCE", buf, _countof(buf));
+        v = (n > 0 && std::wcscmp(buf, L"1") == 0) ? 1 : 0;
+        InterlockedExchange(&s_cached, v);
+    }
+    return v == 1;
+}
+
 HANDLE WINAPI Hook_CreateMutexW(LPSECURITY_ATTRIBUTES sa, BOOL initialOwner, LPCWSTR name) {
-    if (name != nullptr && _wcsnicmp(name, L"SplinterCell3", 13) == 0) {
+    if (AllowMultiInstance() && name != nullptr && _wcsnicmp(name, L"SplinterCell3", 13) == 0) {
         wchar_t unique[256];
         _snwprintf_s(unique, sizeof(unique) / sizeof(unique[0]), _TRUNCATE, L"%ls_%lu", name, GetCurrentProcessId());
         return g_CreateMutexW(sa, initialOwner, unique);
@@ -376,7 +421,7 @@ HANDLE WINAPI Hook_CreateMutexW(LPSECURITY_ATTRIBUTES sa, BOOL initialOwner, LPC
 }
 
 HANDLE WINAPI Hook_CreateMutexA(LPSECURITY_ATTRIBUTES sa, BOOL initialOwner, LPCSTR name) {
-    if (name != nullptr && _strnicmp(name, "SplinterCell3", 13) == 0) {
+    if (AllowMultiInstance() && name != nullptr && _strnicmp(name, "SplinterCell3", 13) == 0) {
         char unique[256];
         std::snprintf(unique, sizeof(unique), "%s_%lu", name, GetCurrentProcessId());
         return g_CreateMutexA(sa, initialOwner, unique);
@@ -1366,107 +1411,25 @@ void* g_ffire_vtable[14] = {
     reinterpret_cast<void*>(0x10B74100),
 };
 
-// Lightweight double-buffered 8 kHz 16-bit mono waveIn mic peak monitor.
-constexpr int kMicBufCount = 2;
-constexpr int kMicSamples = 400;
-HWAVEIN g_wave_in = nullptr;
-WAVEHDR g_mic_hdr[kMicBufCount]{};
-int16_t g_mic_pcm[kMicBufCount][kMicSamples]{};
+// Modernized 48 kHz mono miniaudio + RNNoise + Opus (24 kbps, 20 ms, DTX) mic capture & peak monitor.
 volatile LONG g_mic_peak = 0;
 LONG g_mic_started = 0;
-volatile LONG g_mic_stopping = 0;
 volatile LONG g_mic_device_id = -1;
-CRITICAL_SECTION g_mic_lock{};
-bool g_mic_lock_init = false;
-
-void EnsureMicLock() {
-    if (!g_mic_lock_init) {
-        InitializeCriticalSection(&g_mic_lock);
-        g_mic_lock_init = true;
-    }
-}
-
-void CALLBACK MicWaveInProc(HWAVEIN hwi, UINT msg, DWORD_PTR, DWORD_PTR param1, DWORD_PTR) {
-    if (msg != WIM_DATA || !hwi || !param1 || InterlockedCompareExchange(&g_mic_stopping, 0, 0) != 0) {
-        return;
-    }
-    WAVEHDR* hdr = reinterpret_cast<WAVEHDR*>(param1);
-    const int samples = static_cast<int>(hdr->dwBytesRecorded / sizeof(int16_t));
-    const int16_t* pcm = reinterpret_cast<const int16_t*>(hdr->lpData);
-    int peak = 0;
-    for (int i = 0; i < samples; ++i) {
-        const int v = pcm[i] < 0 ? -static_cast<int>(pcm[i]) : static_cast<int>(pcm[i]);
-        if (v > peak) {
-            peak = v;
-        }
-    }
-    int scaled = (peak * 100) / 16000;
-    if (scaled > 100) {
-        scaled = 100;
-    }
-    InterlockedExchange(&g_mic_peak, scaled);
-    hdr->dwBytesRecorded = 0;
-    if (InterlockedCompareExchange(&g_mic_stopping, 0, 0) == 0) {
-        waveInAddBuffer(hwi, hdr, sizeof(WAVEHDR));
-    }
-}
 
 void StartMicCapture() {
-    EnsureMicLock();
-    EnterCriticalSection(&g_mic_lock);
     if (InterlockedCompareExchange(&g_mic_started, 1, 0) != 0) {
-        LeaveCriticalSection(&g_mic_lock);
         return;
     }
-    const UINT num_devs = waveInGetNumDevs();
-    if (num_devs == 0) {
+    const int dev_id = static_cast<int>(InterlockedCompareExchange(&g_mic_device_id, 0, 0));
+    if (!VoiceAudioStartCapture(dev_id, &g_mic_peak)) {
         InterlockedExchange(&g_mic_started, 0);
-        LeaveCriticalSection(&g_mic_lock);
-        return;
     }
-    InterlockedExchange(&g_mic_stopping, 0);
-    const LONG req_id = InterlockedCompareExchange(&g_mic_device_id, 0, 0);
-    const UINT dev_id = (req_id < 0 || static_cast<UINT>(req_id) >= num_devs) ? WAVE_MAPPER : static_cast<UINT>(req_id);
-    WAVEFORMATEX wf{};
-    wf.wFormatTag = WAVE_FORMAT_PCM;
-    wf.nChannels = 1;
-    wf.nSamplesPerSec = 8000;
-    wf.wBitsPerSample = 16;
-    wf.nBlockAlign = 2;
-    wf.nAvgBytesPerSec = 16000;
-    if (waveInOpen(&g_wave_in, dev_id, &wf, reinterpret_cast<DWORD_PTR>(&MicWaveInProc), 0, CALLBACK_FUNCTION) !=
-        MMSYSERR_NOERROR) {
-        g_wave_in = nullptr;
-        InterlockedExchange(&g_mic_started, 0);
-        LeaveCriticalSection(&g_mic_lock);
-        return;
-    }
-    for (int i = 0; i < kMicBufCount; ++i) {
-        g_mic_hdr[i].lpData = reinterpret_cast<LPSTR>(g_mic_pcm[i]);
-        g_mic_hdr[i].dwBufferLength = sizeof(g_mic_pcm[i]);
-        waveInPrepareHeader(g_wave_in, &g_mic_hdr[i], sizeof(WAVEHDR));
-        waveInAddBuffer(g_wave_in, &g_mic_hdr[i], sizeof(WAVEHDR));
-    }
-    waveInStart(g_wave_in);
-    LeaveCriticalSection(&g_mic_lock);
 }
 
 void StopMicCapture() {
-    EnsureMicLock();
-    EnterCriticalSection(&g_mic_lock);
-    if (g_wave_in) {
-        InterlockedExchange(&g_mic_stopping, 1);
-        waveInStop(g_wave_in);
-        waveInReset(g_wave_in);
-        for (int i = 0; i < kMicBufCount; ++i) {
-            waveInUnprepareHeader(g_wave_in, &g_mic_hdr[i], sizeof(WAVEHDR));
-        }
-        waveInClose(g_wave_in);
-        g_wave_in = nullptr;
-    }
+    VoiceAudioStopCapture();
     InterlockedExchange(&g_mic_started, 0);
     InterlockedExchange(&g_mic_peak, 0);
-    LeaveCriticalSection(&g_mic_lock);
 }
 
 bool RoomPtrOk(const void* p) {
@@ -2135,8 +2098,8 @@ void DispatchFriendOpAsync(const wchar_t* path, const std::string& json_body) {
 }
 
 void SelectMicDevice(int dev_id, bool notify_launcher) {
-    const UINT num_devs = waveInGetNumDevs();
-    if (dev_id >= static_cast<int>(num_devs)) {
+    const int num_devs = VoiceAudioGetCaptureDeviceCount();
+    if (dev_id >= num_devs) {
         dev_id = -1;
     }
     InterlockedExchange(&g_mic_device_id, dev_id);
@@ -2146,9 +2109,9 @@ void SelectMicDevice(int dev_id, bool notify_launcher) {
     }
     char dev_name[96] = "System Default";
     if (dev_id >= 0) {
-        WAVEINCAPSW caps{};
-        if (waveInGetDevCapsW(static_cast<UINT>(dev_id), &caps, sizeof(caps)) == MMSYSERR_NOERROR) {
-            WideCharToMultiByte(CP_UTF8, 0, caps.szPname, -1, dev_name, sizeof(dev_name), nullptr, nullptr);
+        wchar_t wname[96]{};
+        if (VoiceAudioGetCaptureDeviceName(dev_id, wname, 96)) {
+            WideCharToMultiByte(CP_UTF8, 0, wname, -1, dev_name, sizeof(dev_name), nullptr, nullptr);
         }
     }
     Logf("heure=0 pid=%lu dir=etat local=- pair=- len=0 hex= seq=0 tronque=0 note=mic_device_selected id=%d name=%s",
@@ -2164,7 +2127,7 @@ void PollMicHotkey() {
     static bool s_f8_down = false;
     const bool down = (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
     if (down && !s_f8_down) {
-        const int num_devs = static_cast<int>(waveInGetNumDevs());
+        const int num_devs = VoiceAudioGetCaptureDeviceCount();
         const int cur = static_cast<int>(InterlockedCompareExchange(&g_mic_device_id, 0, 0));
         int next = cur + 1;
         if (next >= num_devs) {
@@ -2680,9 +2643,9 @@ int __fastcall Hook_EngineInitVoiceChat(uint8_t* engine, void*) {
         StartMicCapture();
         if (InterlockedCompareExchange(&g_logged_voice_init, 1, 0) == 0) {
             Logf("heure=0 pid=%lu dir=etat local=- pair=- len=0 hex= seq=0 tronque=0 "
-                 "note=voice_chat_enabled sens=%.0f wrapper=0x%08lX mic_devs=%u",
+                 "note=voice_chat_enabled sens=%.0f wrapper=0x%08lX mic_devs=%d",
                  GetCurrentProcessId(), sens > 0.0f ? sens : 50.0f,
-                 static_cast<unsigned long>(reinterpret_cast<uintptr_t>(wrapper)), waveInGetNumDevs());
+                 static_cast<unsigned long>(reinterpret_cast<uintptr_t>(wrapper)), VoiceAudioGetCaptureDeviceCount());
         }
     }
     return ok;

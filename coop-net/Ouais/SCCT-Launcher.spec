@@ -4,7 +4,7 @@
 a = Analysis(
     ['start_launcher.py'],
     pathex=[],
-    binaries=[],
+    binaries=[('scct_p2p_x64.dll', '.')],
     datas=[('static', 'static'), ('mod', 'mod')],
     hiddenimports=['clr_loader', 'pythonnet', 'webview'],
     hookspath=[],

@@ -58,6 +58,22 @@ def main():
     conv_dir = os.path.join(REPO_ROOT, "SCDA_Coop_Maps", "converted", out_name)
     run_step("validate_pkg", [py, os.path.join(HERE, "validate_pkg.py"), conv_dir])
 
+    # Automated ship-gate checks on converted map (spawns, coop volumes, audio energy, mission list)
+    sys.path.insert(0, HERE)
+    import convert_package as cp
+    scl_path = os.path.join(conv_dir, "Data", "Maps", f"{out_name}.scl")
+    pk_chk = cp.PackageData(scl_path)
+    pstarts = [e for e in pk_chk.exps if cp.PackageData.exp_cls_name(pk_chk, e).lower() == "echelonplayerstart"]
+    if len(pstarts) < 2:
+        raise RuntimeError(f"Validation failed for {out_name}: expected >=2 EchelonPlayerStart actors, found {len(pstarts)}")
+    coop_vols = [e for e in pk_chk.exps if cp.PackageData.exp_cls_name(pk_chk, e).lower() == "ecoopinteractvolume"]
+    print(f"[validate_map] {out_name}: player_starts={len(pstarts)}, coop_interact_volumes={len(coop_vols)}")
+    rot_ini = os.path.join(args.ct_dir, "System", "MapRotation.ini")
+    if os.path.exists(rot_ini):
+        rot_txt = open(rot_ini, "r", encoding="utf-8", errors="ignore").read().lower()
+        if out_name.lower() not in rot_txt:
+            print(f"[validate_map] WARNING: {out_name} not yet listed in {rot_ini}")
+
     if not args.skip_audio:
         sounds_dir = os.path.join(args.ct_dir, "Data", "Sounds")
         run_step("convert_audio", [py, os.path.join(HERE, "convert_audio.py"), "--map", args.map, "--out-name", out_name, "--sounds", sounds_dir])

@@ -372,18 +372,20 @@ async function checkUpdates(silent = false) {
   const { data } = await api("/api/update/check");
   if (!data.ok) return;
   setText($("st-ver"), data.current_version || "2.1.0");
+  const capable = data.update_capable !== false && data.installed;
+  if ($("btn-check-upd")) show($("btn-check-upd"), capable);
   if (data.update_available) {
     setText($("st-upd"), `v${data.target_version} available`);
     $("st-upd").className = "ok";
-    show($("btn-apply-upd"), true);
-    show($("btn-update-pill"), true);
+    show($("btn-apply-upd"), capable);
+    show($("btn-update-pill"), capable);
     setText($("btn-update-pill"), `Update v${data.target_version}`);
   } else {
-    setText($("st-upd"), data.installed ? "Up to date" : "Dev / portable build");
+    setText($("st-upd"), capable ? "Up to date" : "Dev / portable build");
     $("st-upd").className = "";
     show($("btn-apply-upd"), false);
     show($("btn-update-pill"), false);
-    if (!silent) toast(data.error ? `Update check: ${data.error}` : "Launcher is up to date.");
+    if (!silent && capable) toast(data.error ? `Update check: ${data.error}` : "Launcher is up to date.");
   }
 }
 async function applyUpdate() {

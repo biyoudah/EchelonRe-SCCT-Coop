@@ -18,7 +18,7 @@ import convert_loading
 # SCDA-only classes mapped to closest retail SCCT PC equivalents
 SCDA_CLASS_MAP = {
     ("echelongameobject", "esnowball"): ("echelongameobject", "ebottlewine"),
-    ("echeloningredient", "ecardreader"): ("echeloningredient", "eswitchobject"),
+    ("echeloningredient", "ecardreader"): ("echeloningredient", "eretinalscanner"),
     ("echeloningredient", "ekeycard"): ("echeloningredient", "egameplayobjectpickup"),
     ("echelon", "esavecheckpointvolume"): ("echelon", "evolume"),
     ("engine", "emitterinstancer"): ("engine", "emitter"),
@@ -31,12 +31,14 @@ SCDA_CLASS_MAP = {
     ("echeloningredient", "eberetta92fsw"): ("echeloningredient", "epya"),
     ("echeloningredient", "ecutwireinteraction"): ("echeloningredient", "ewirehackinteraction"),
     ("echeloningredient", "eradio"): ("echeloningredient", "eswitchobject"),
-    ("echeloningredient", "esbcustom"): ("echeloningredient", "esbcustomactor"),
-    ("echeloningredient", "esbrope"): ("echeloningredient", "esbropeactor"),
     ("echeloningredient", "esearchlight"): ("echeloningredient", "ealarmlight"),
     ("echeloningredient", "euavhelico"): ("echeloningredient", "ehelicopter"),
-    ("engine", "ellipsoidactor"): ("engine", "actor"),
+    ("engine", "ellipsoidactor"): ("engine", "note"),
     ("engine", "esoftbody"): ("engine", "esoftbodyactor"),
+    ("echeloningredient", "esbcustom"): ("echeloningredient", "egameplayobjectdisplay"),
+    ("echeloningredient", "esbrope"): ("echeloningredient", "egameplayobjectdisplay"),
+    ("echeloningredient", "esbcustomactor"): ("echeloningredient", "egameplayobjectdisplay"),
+    ("echeloningredient", "esbropeactor"): ("echeloningredient", "egameplayobjectdisplay"),
     ("engine", "particlespawner"): ("engine", "emitter"),
     ("engine", "scx_ice_material"): ("engine", "scx_basic_material"),
     ("echeloneffect", "brk_explopropane"): ("echeloneffect", "xexplogazbottle"),
@@ -1585,7 +1587,12 @@ def patch_scda_level_actors(pk, parsed_pkgs):
             keycard_ref = _ensure_import(pk, "Engine", "StaticMesh", cr_imp, "keycard")
 
     coopnpc_imp = _ensure_import(pk, "Core", "Package", 0, "CoopNPC")
-    ct_npc_mesh_ref = _ensure_import(pk, "Engine", "SkeletalMesh", coopnpc_imp, "NK_Soldier_COOP")
+    ct_npc_meshes = {
+        "eaigenericnpc": _ensure_import(pk, "Engine", "SkeletalMesh", coopnpc_imp, "NK_Soldier_COOP"),
+        "edisplacesoldier": _ensure_import(pk, "Engine", "SkeletalMesh", coopnpc_imp, "Panam_Soldier_COOP"),
+        "eelite": _ensure_import(pk, "Engine", "SkeletalMesh", coopnpc_imp, "NK_ELiteA_COOP"),
+        "ecivilian": _ensure_import(pk, "Engine", "SkeletalMesh", coopnpc_imp, "Panam_Tech_COOP"),
+    }
     ech_ing_imp = _ensure_import(pk, "Core", "Package", 0, "EchelonIngredient")
     ak_ref = _ensure_import(pk, "Core", "Class", ech_ing_imp, "EAK101W")
     pya_ref = _ensure_import(pk, "Core", "Class", ech_ing_imp, "EPYa")
@@ -1599,9 +1606,14 @@ def patch_scda_level_actors(pk, parsed_pkgs):
         "egameplayobjectpickup",
         "ecustomobjectiveinteraction",
         "eaigenericnpc",
+        "edisplacesoldier",
+        "eelite",
+        "ecivilian",
         "emusic",
         "echelonplayerstart",
         "espeechdispatcher",
+        "echelonlevelinfo",
+        "eaizone",
     )
 
     keycard_fixed = 0
@@ -1678,23 +1690,11 @@ def patch_scda_level_actors(pk, parsed_pkgs):
                     pk.ensure_name("SCDA_B2B_Climb", 0x00070010),
                 )
                 coopvol_fixed += 1
-            elif coop_val == 0:
-                if "balignatcenter" in existing:
-                    drop_props.add("balignatcenter")
-                    coopvol_fixed += 1
-                if old_limit is None or old_limit < 320.0:
-                    drop_props.add("limit")
-                    prefix += rp.write_ci(pk.ensure_name("Limit", 0x00070010)) + b"\x24" + struct.pack("<f", 350.0)
-                    if "balignatcenter" not in existing:
-                        coopvol_fixed += 1
-            elif coop_val == 2:
-                if "balignatcenter" in existing:
-                    drop_props.add("balignatcenter")
-                    coopvol_fixed += 1
-        elif cls_low == "eaigenericnpc":
-            # Remap EAIGenericNPC -> EchelonCharacter.ENorthKoreanSoldier with native
-            # CT Co-op soldier mesh + weapons so EAIPawn.InitAnims binds without T-posing.
-            if e["cls"] < 0:
+        elif cls_low in ct_npc_meshes:
+            # Remap EAIGenericNPC -> EchelonCharacter.ENorthKoreanSoldier and bind native
+            # CT CoopNPC skeletal meshes + CT weapons across all 4 NPC classes so
+            # EAIPawn.InitAnims links CT MeshAnimations instead of SCDA skeletons/anims.
+            if cls_low == "eaigenericnpc" and e["cls"] < 0:
                 old_cls = pk.imps[-e["cls"] - 1]
                 e["cls"] = _ensure_import(
                     pk,
@@ -1705,11 +1705,13 @@ def patch_scda_level_actors(pk, parsed_pkgs):
                 )
                 npc_class_fixed += 1
 
+            npc_mesh_ref = ct_npc_meshes[cls_low]
             drop_props.update(("mesh", "backupmesh", "anim", "dyninitialinventory"))
-            prefix += _encode_obj_prop(pk.ensure_name("Mesh", 0x00070010), ct_npc_mesh_ref)
-            prefix += _encode_obj_prop(pk.ensure_name("BackupMesh", 0x00070010), ct_npc_mesh_ref)
-            inv_body = rp.write_ci(2) + rp.write_ci(ak_ref) + rp.write_ci(pya_ref)
-            prefix += rp.write_ci(pk.ensure_name("DynInitialInventory", 0x00070010)) + _encode_bytes_prop_size(9, inv_body)
+            prefix += _encode_obj_prop(pk.ensure_name("Mesh", 0x00070010), npc_mesh_ref)
+            prefix += _encode_obj_prop(pk.ensure_name("BackupMesh", 0x00070010), npc_mesh_ref)
+            if cls_low != "ecivilian":
+                inv_body = rp.write_ci(2) + rp.write_ci(ak_ref) + rp.write_ci(pya_ref)
+                prefix += rp.write_ci(pk.ensure_name("DynInitialInventory", 0x00070010)) + _encode_bytes_prop_size(9, inv_body)
             if "colflaghavok" not in existing:
                 prefix += rp.write_ci(pk.ensure_name("ColFlagHavok", 0x00070010)) + b"\x01\x03"
             npc_fixed += 1
@@ -1818,8 +1820,68 @@ def patch_scda_level_actors(pk, parsed_pkgs):
                     replacements[idx_s] = rp.write_ci(prop_nm_idx) + _encode_bytes_prop_size(9, bytes(body))
                     speech_fixed += 1
 
+        elif cls_low == "eaizone":
+            # EUAVHelico remaps to EHelicopter, which is not an EAIPawn in CT PC and lacks
+            # vtable slot +0x2e0; strip helicopter refs from EAIZone.Members.
+            for idx_s, (nm, p_start, p_end) in enumerate(spans):
+                if nm.lower() != "members":
+                    continue
+                raw = d[sf_end + p_start : sf_end + p_end]
+                q = 0
+                prop_nm_idx, q = rp.read_ci(raw, q)
+                q += 1  # ArrayProperty info
+                _, q = rp.read_ci(raw, q)  # byte size
+                cnt, q = rp.read_ci(raw, q)
+                kept = []
+                removed = False
+                for _ in range(cnt):
+                    ref, q = rp.read_ci(raw, q)
+                    cls_ref = pk.exp_cls_name(pk.exps[ref - 1]).lower() if ref > 0 else ""
+                    if cls_ref in ("ehelicopter", "euavhelico"):
+                        removed = True
+                    else:
+                        kept.append(ref)
+                if removed:
+                    if not kept:
+                        drop_props.add("members")
+                    else:
+                        body = bytearray(rp.write_ci(len(kept)))
+                        for ref in kept:
+                            body += rp.write_ci(ref)
+                        replacements[idx_s] = rp.write_ci(prop_nm_idx) + _encode_bytes_prop_size(9, bytes(body))
+        elif cls_low == "echelonlevelinfo":
+            # SCDA EchelonLevelInfo.BarkEvents has an ArrayProperty byte-size that desyncs
+            # CT PC's SerializeTaggedProperties. Strip BarkEvents and resume at the first
+            # valid post-BarkEvents property that parses cleanly to EOF.
+            be_span = next(((s, pe_b) for nm, s, pe_b in spans if nm.lower() == "barkevents"), None)
+            if be_span is not None:
+                _VALID_AFTER_BARK = {
+                    "patterns", "specialeventanims", "specialeventanimsplayer",
+                    "alertlevelcooldownperiod", "dynamicevents", "eaizones",
+                    "cameralocationdynamic", "cameralocationtop", "cameralocationfront",
+                    "cameralocationside", "camerarotationdynamic", "visiblegroups",
+                    "bisenabled", "lastvaluecalculated", "level", "physicsvolume",
+                    "tag", "region", "materstateinterpol",
+                }
+                bs, be_end = be_span
+                resume_off = None
+                for cand in range(sf_end + be_end - 64, len(d)):
+                    try:
+                        sp2, pe2, _ = parse_prop_spans(pk.names, d[cand:])
+                        if cand + pe2 == len(d) and sp2 and sp2[0][0].lower() in _VALID_AFTER_BARK and not any(nm.startswith("StaticMeshInstance") for nm, _, _ in sp2):
+                            resume_off = cand
+                            break
+                    except Exception:
+                        pass
+                if resume_off is not None:
+                    e["data"] = bytes(d[: sf_end + bs]) + bytes(d[resume_off:])
+                    e["ssz"] = len(e["data"])
+                    d = e["data"]
+                    spans, none_start, _ = parse_prop_spans(pk.names, d[sf_end:])
+                    existing = {nm.lower() for nm, _, _ in spans}
+
         # Add CT-PC ColLocation / ColRotation from existing Location / Rotation if missing
-        if cls_low in ("ekeycard", "ecardreader", "ecoopinteractvolume", "ecoopsuccessvolume", "evolume",
+        if cls_low in ("ekeycard", "ecardreader", "ecoopsuccessvolume", "evolume",
                        "egameplayobjectpickup", "ecustomobjectiveinteraction", "eaigenericnpc"):
             for nm, p_start, p_end in spans:
                 nl = nm.lower()

@@ -10,4 +10,6 @@ export interface Env {
   CONTENT_GITHUB_TOKEN?: string;
   CONTENT_GITHUB_REPO?: string;
   CONTENT_SCDA_ASSET_ID?: string;
+  CF_TURN_TOKEN_ID?: string;
+  CF_TURN_API_TOKEN?: string;
 }

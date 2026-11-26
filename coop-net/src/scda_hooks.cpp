@@ -490,7 +490,7 @@ struct WideOps {
 
 template <typename Ops>
 const typename Ops::Char* RewriteSoundPath(const typename Ops::Char* path, typename Ops::Char out[MAX_PATH]) {
-    if (!path) {
+    if (!path || g_active_scda_map[0] == L'\0') {
         return path;
     }
     const typename Ops::Char* sep = Ops::LastSep(path);
@@ -655,12 +655,46 @@ void __declspec(naked) Hook_NullHashNode() {
     }
 }
 
+uint8_t* ResolveRvaOrScan(uintptr_t exe_base, uintptr_t rva, const uint8_t* exp, size_t exp_len) {
+    auto* primary = reinterpret_cast<uint8_t*>(exe_base + rva);
+    if (std::memcmp(primary, exp, exp_len) == 0) {
+        return primary;
+    }
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(exe_base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+        return nullptr;
+    }
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS32*>(exe_base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) {
+        return nullptr;
+    }
+    const auto* sec = IMAGE_FIRST_SECTION(nt);
+    uint8_t* unique_hit = nullptr;
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++sec) {
+        if ((sec->Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0 || sec->Misc.VirtualSize < exp_len) {
+            continue;
+        }
+        auto* start = reinterpret_cast<uint8_t*>(exe_base + sec->VirtualAddress);
+        const size_t limit = sec->Misc.VirtualSize - exp_len;
+        for (size_t off = 0; off <= limit; ++off) {
+            if (std::memcmp(start + off, exp, exp_len) == 0) {
+                if (unique_hit != nullptr) {
+                    return nullptr;
+                }
+                unique_hit = start + off;
+            }
+        }
+    }
+    return unique_hit;
+}
+
 bool InstallCheckedRvaHook(const char* name, uintptr_t rva, const uint8_t* exp, size_t exp_len, void* detour,
                            void** orig) {
-    auto* target = reinterpret_cast<uint8_t*>(g_exe_base + rva);
-    if (std::memcmp(target, exp, exp_len) != 0) {
+    uint8_t* target = ResolveRvaOrScan(g_exe_base, rva, exp, exp_len);
+    if (!target) {
+        auto* raw = reinterpret_cast<const uint8_t*>(g_exe_base + rva);
         ScdaLog("scda_hook_%s_prologue_mismatch rva=0x%06lX got=%02X_%02X_%02X_%02X", name,
-                static_cast<unsigned long>(rva), target[0], target[1], target[2], target[3]);
+                static_cast<unsigned long>(rva), raw[0], raw[1], raw[2], raw[3]);
         return false;
     }
     const MH_STATUS c = MH_CreateHook(target, detour, orig);

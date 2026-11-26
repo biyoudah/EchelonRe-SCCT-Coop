@@ -103,6 +103,31 @@ export class LobbyDirectory extends DurableObject<Env> {
         } catch {
           // Ignore
         }
+        return;
+      }
+      // Relay JSON ICE signaling messages ("ice-offer", "ice-answer", "ice-candidate", "ice-ready", "ice-fallback")
+      try {
+        const parsed = JSON.parse(message) as { type?: string };
+        const t = parsed?.type ?? "";
+        if (
+          t === "ice-offer" ||
+          t === "ice-answer" ||
+          t === "ice-candidate" ||
+          t === "ice-ready" ||
+          t === "ice-fallback"
+        ) {
+          for (const other of this.ctx.getWebSockets()) {
+            if (other !== ws) {
+              try {
+                other.send(message);
+              } catch {
+                // Ignore stale peer socket until close fires
+              }
+            }
+          }
+        }
+      } catch {
+        // Ignore malformed text frames
       }
       return;
     }

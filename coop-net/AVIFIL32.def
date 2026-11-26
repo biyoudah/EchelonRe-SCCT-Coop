@@ -1,0 +1,12 @@
+LIBRARY AVIFIL32
+EXPORTS
+    AVIFileCreateStreamW
+    AVIFileExit
+    AVIFileInit
+    AVIFileOpenW
+    AVIFileRelease
+    AVIMakeCompressedStream
+    AVISaveOptions
+    AVIStreamRelease
+    AVIStreamSetFormat
+    AVIStreamWrite

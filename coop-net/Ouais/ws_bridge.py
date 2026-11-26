@@ -8,6 +8,14 @@ import urllib.parse
 
 import websockets
 
+try:
+    from . import p2p_ice
+except Exception:
+    try:
+        import p2p_ice
+    except Exception:
+        p2p_ice = None
+
 MAGIC = 0x31524353  # 'SCR1' little-endian
 VERSION = 1
 MARKER = 0x7EC3
@@ -106,8 +114,15 @@ class CloudRelayBridge:
         self._peers_by_game_port = {}
         self._next_id = 1
 
+        self._ice = None
+        self._signal_queue = None
         self.ws_connected = False
         self.partner_connected = False
+        self.transport_mode = "ws-relay"
+        self._ice_sent_offer = False
+        self._ice_got_remote_sdp = False
+        self._pending_ice_candidates = []
+        self._pending_ice_ready = False
         self.last_error = ""
         self.tx_packets = 0
         self.rx_packets = 0
@@ -145,8 +160,12 @@ class CloudRelayBridge:
                     pass
         self._ctrl_sock = None
         self._data_sock = None
+        self._close_ice()
         self.ws_connected = False
         self.partner_connected = False
+        self.transport_mode = "ws-relay"
+        self._ice_sent_offer = False
+        self._ice_got_remote_sdp = False
 
     def wait_connected(self, timeout=5.0):
         deadline = time.time() + timeout
@@ -175,6 +194,7 @@ class CloudRelayBridge:
             "local_port": self.local_port,
             "ws_connected": self.ws_connected,
             "partner_connected": self.partner_connected,
+            "transport_mode": self.transport_mode,
             "tx_packets": self.tx_packets,
             "rx_packets": self.rx_packets,
             "last_error": self.last_error,
@@ -234,6 +254,11 @@ class CloudRelayBridge:
             if peer is None or len(data) == 0 or len(data) > 8192:
                 continue
             frame = struct.pack("<H", peer.game_port) + data
+            ice = self._ice
+            if ice is not None and ice.connected and p2p_ice is not None:
+                if ice.send(bytes((p2p_ice.PKT_TYPE_GAME,)) + frame):
+                    self.tx_packets += 1
+                    continue
             try:
                 if self._outbound_queue.full():
                     self._outbound_queue.get_nowait()
@@ -317,6 +342,109 @@ class CloudRelayBridge:
             except Exception:
                 pass
 
+    def _queue_signal(self, payload):
+        loop = self._loop
+        q = self._signal_queue
+        if loop is None or q is None or self._stop_event.is_set():
+            return
+        msg = json.dumps(payload)
+
+        def _put():
+            try:
+                if q.full():
+                    q.get_nowait()
+                q.put_nowait(msg)
+            except Exception:
+                pass
+
+        try:
+            loop.call_soon_threadsafe(_put)
+        except Exception:
+            pass
+
+    def _close_ice(self):
+        ice = self._ice
+        self._ice = None
+        self.transport_mode = "ws-relay"
+        self._ice_sent_offer = False
+        self._ice_got_remote_sdp = False
+        self._pending_ice_candidates = []
+        self._pending_ice_ready = False
+        if ice is not None:
+            ice.close()
+
+    def _flush_pending_ice(self):
+        if self._ice is None or not self._ice_got_remote_sdp:
+            return
+        for cand in self._pending_ice_candidates:
+            self._ice.add_remote_candidate(cand)
+        self._pending_ice_candidates.clear()
+        if self._pending_ice_ready:
+            self._pending_ice_ready = False
+            self._ice.set_remote_gathering_done()
+
+    def _on_ice_state(self, state):
+        if p2p_ice is None:
+            return
+        if state in (p2p_ice.ICE_CONNECTED, p2p_ice.ICE_COMPLETED):
+            self.transport_mode = "p2p-ice"
+            self._emit()
+        elif state == p2p_ice.ICE_FAILED:
+            self.transport_mode = "ws-relay"
+            self._queue_signal({"type": "ice-fallback", "reason": "ice_failed"})
+            self._emit()
+        elif state == p2p_ice.ICE_DISCONNECTED and self.transport_mode == "p2p-ice":
+            self.transport_mode = "ws-relay"
+            self._emit()
+
+    def _on_ice_recv(self, raw):
+        if len(raw) < 4:
+            return
+        pkt_type = raw[0]
+        if p2p_ice is not None and pkt_type not in (p2p_ice.PKT_TYPE_GAME, p2p_ice.PKT_TYPE_VOICE):
+            return
+        game_port = struct.unpack_from("<H", raw, 1)[0]
+        payload = raw[3:]
+        with self._lock:
+            peer = self._peers_by_game_port.get(game_port)
+        if peer and peer.data_addr and self._data_sock:
+            try:
+                self._data_sock.sendto(payload, peer.data_addr)
+                self.rx_packets += 1
+            except Exception:
+                pass
+
+    async def _start_ice_session(self, send_offer=False):
+        if p2p_ice is None or not p2p_ice.is_available():
+            return
+        if self._ice is None:
+            loop = asyncio.get_running_loop()
+            ice_cfg = await loop.run_in_executor(
+                None,
+                p2p_ice.fetch_ice_config,
+                self.worker_base_url,
+                self.bearer_token,
+                self.room_code,
+            )
+            if self._stop_event.is_set():
+                return
+            ice = p2p_ice.IceSession(
+                ice_cfg,
+                on_state=self._on_ice_state,
+                on_candidate=lambda sdp: self._queue_signal({"type": "ice-candidate", "candidate": sdp}),
+                on_gather_done=lambda: self._queue_signal({"type": "ice-ready"}),
+                on_recv=self._on_ice_recv,
+            )
+            if not ice.ready:
+                return
+            self._ice = ice
+            ice.gather()
+        if send_offer and self._ice is not None and not self._ice_sent_offer:
+            sdp = self._ice.get_local_sdp()
+            if sdp:
+                self._ice_sent_offer = True
+                self._queue_signal({"type": "ice-offer", "sdp": sdp})
+
     async def _ws_loop(self):
         headers = {"Authorization": f"Bearer {self.bearer_token}"}
         while not self._stop_event.is_set():
@@ -329,10 +457,12 @@ class CloudRelayBridge:
                     ping_timeout=20,
                     max_size=65536,
                 ) as ws:
+                    self._signal_queue = asyncio.Queue(maxsize=256)
                     self.ws_connected = True
                     self.last_error = ""
                     self._emit()
                     sender = asyncio.create_task(self._ws_sender(ws))
+                    sig_sender = asyncio.create_task(self._ws_signal_sender(ws))
                     try:
                         async for msg in ws:
                             if self._stop_event.is_set():
@@ -355,17 +485,56 @@ class CloudRelayBridge:
                                     self.partner_connected = True
                                     self._notify_peers_address()
                                     self._emit()
+                                    asyncio.create_task(self._start_ice_session(send_offer=True))
+                                elif etype == "ice-offer":
+                                    sdp = ev.get("sdp") or ""
+                                    if sdp:
+                                        await self._start_ice_session(send_offer=False)
+                                        if self._ice is not None:
+                                            self._ice.set_remote_sdp(sdp)
+                                            self._ice_got_remote_sdp = True
+                                            self._flush_pending_ice()
+                                            if not self._ice_sent_offer:
+                                                local_sdp = self._ice.get_local_sdp()
+                                                if local_sdp:
+                                                    self._ice_sent_offer = True
+                                                    self._queue_signal({"type": "ice-answer", "sdp": local_sdp})
+                                elif etype == "ice-answer":
+                                    sdp = ev.get("sdp") or ""
+                                    if sdp and self._ice is not None and not self._ice_got_remote_sdp:
+                                        self._ice.set_remote_sdp(sdp)
+                                        self._ice_got_remote_sdp = True
+                                        self._flush_pending_ice()
+                                elif etype == "ice-candidate":
+                                    cand = ev.get("candidate") or ""
+                                    if cand:
+                                        if self._ice is not None and self._ice_got_remote_sdp:
+                                            self._ice.add_remote_candidate(cand)
+                                        else:
+                                            self._pending_ice_candidates.append(cand)
+                                elif etype == "ice-ready":
+                                    if self._ice is not None and self._ice_got_remote_sdp:
+                                        self._ice.set_remote_gathering_done()
+                                    else:
+                                        self._pending_ice_ready = True
+                                elif etype == "ice-fallback":
+                                    self._close_ice()
+                                    self._emit()
                                 elif etype in ("peer_left", "waiting"):
                                     self.partner_connected = False
+                                    self._close_ice()
                                     self._emit()
                     finally:
                         sender.cancel()
-                        await asyncio.gather(sender, return_exceptions=True)
+                        sig_sender.cancel()
+                        await asyncio.gather(sender, sig_sender, return_exceptions=True)
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 self.last_error = str(exc)
             finally:
+                self._close_ice()
+                self._signal_queue = None
                 self.ws_connected = False
                 self.partner_connected = False
                 if not self._stop_event.is_set():
@@ -378,3 +547,8 @@ class CloudRelayBridge:
             frame = await self._outbound_queue.get()
             await ws.send(frame)
             self.tx_packets += 1
+
+    async def _ws_signal_sender(self, ws):
+        while not self._stop_event.is_set():
+            msg = await self._signal_queue.get()
+            await ws.send(msg)
