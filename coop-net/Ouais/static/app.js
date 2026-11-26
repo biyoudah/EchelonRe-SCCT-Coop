@@ -209,9 +209,10 @@ function connectEvents() {
     const p = S.packs.find((x) => x.id === job.id);
     if (p) {
       p.job = job;
-      if (job.status === "done") p.installed = true;
-      if (job.status === "uninstalled") p.installed = false;
-      renderContent();
+      if (job.status === "done") { p.installed = true; p.lastError = ""; }
+      if (job.status === "uninstalled") { p.installed = false; p.lastError = ""; }
+      if (job.status === "error") { p.lastError = job.error || "Install failed."; }
+      updatePackCard(p);
     }
     if (job.status === "done") toast(job.message || "Content installed.");
     if (job.status === "error") toast(job.error || "Download failed.", true);
@@ -329,36 +330,119 @@ function renderContent() {
   if (!box) return;
   box.replaceChildren();
   for (const p of S.packs || []) {
-    const j = p.job || {};
-    const busyJob = j.status === "downloading" || j.status === "extracting" || j.status === "patching";
-    const badge = h("span", {
-      class: "pack-badge" + (p.installed ? " ok" : ""),
-      text: busyJob ? (j.message || "Installing...") : (p.installed ? "Installed" : "Not installed"),
-    });
-    const acts = h("div", { class: "row" });
-    acts.append(h("button", {
-      class: "btn sm " + (p.installed ? "" : "primary"),
-      disabled: busyJob,
-      text: busyJob ? `${j.progress || 0}%` : (p.installed ? "Reinstall" : "Install"),
-      onclick: () => installPack(p.id),
-    }));
-    if (p.installed && !busyJob) {
-      acts.append(h("button", { class: "btn sm ghost", text: "Remove", onclick: () => uninstallPack(p.id) }));
+    box.append(buildPackCard(p));
+  }
+}
+
+function buildPackCard(p) {
+  const j = p.job || {};
+  const busyJob = j.status === "downloading" || j.status === "extracting" || j.status === "patching";
+  const isErr = j.status === "error" || Boolean(p.lastError);
+  let badgeCls = "pack-badge";
+  let badgeText = "Not installed";
+  if (busyJob) {
+    badgeText = j.message || "Installing...";
+  } else if (p.installed) {
+    badgeCls += " ok";
+    badgeText = "Installed";
+  } else if (isErr) {
+    badgeCls += " err";
+    badgeText = "Failed";
+  }
+
+  const badge = h("span", { id: `pack-badge-${p.id}`, class: badgeCls, text: badgeText });
+  const acts = h("div", { id: `pack-acts-${p.id}`, class: "row" });
+  acts.append(h("button", {
+    id: `pack-btn-${p.id}`,
+    class: "btn sm " + (p.installed ? "" : "primary"),
+    disabled: busyJob,
+    text: busyJob ? `${j.progress || 0}%` : (p.installed ? "Reinstall" : "Install"),
+    onclick: () => installPack(p.id),
+  }));
+  if (p.installed && !busyJob) {
+    acts.append(h("button", { class: "btn sm ghost", text: "Remove", onclick: () => uninstallPack(p.id) }));
+  }
+
+  const errEl = (isErr && (p.lastError || j.error)) ? h("div", { id: `pack-err-${p.id}`, class: "pack-err", text: p.lastError || j.error }) : null;
+  const progEl = busyJob ? h("progress", { id: `pack-prog-${p.id}`, class: "prog", max: "100", value: String(j.progress || 0) }) : null;
+
+  return h("div", { id: `pack-${p.id}`, class: "card pack", dataset: { packId: p.id } },
+    h("div", { class: "pack-head" }, h("h3", { text: p.name }), badge),
+    h("div", { class: "pack-meta", text: `v${p.version} · ~${p.size_mb} MB` }),
+    h("p", { class: "pack-desc", text: p.description }),
+    p.credits ? h("div", { class: "pack-credits", text: p.credits }) : null,
+    progEl,
+    errEl,
+    acts);
+}
+
+function updatePackCard(p) {
+  const card = $(`pack-${p.id}`);
+  if (!card) return renderContent();
+  const j = p.job || {};
+  const busyJob = j.status === "downloading" || j.status === "extracting" || j.status === "patching";
+  if (j.status === "done" || j.status === "uninstalled") {
+    const fresh = buildPackCard(p);
+    card.replaceWith(fresh);
+    return;
+  }
+
+  const badge = $(`pack-badge-${p.id}`);
+  if (badge) {
+    if (busyJob) {
+      badge.className = "pack-badge";
+      badge.textContent = j.message || "Installing...";
+    } else if (p.installed) {
+      badge.className = "pack-badge ok";
+      badge.textContent = "Installed";
+    } else if (j.status === "error" || p.lastError) {
+      badge.className = "pack-badge err";
+      badge.textContent = "Failed";
     }
-    const card = h("div", { class: "card pack" },
-      h("div", { class: "pack-head" }, h("h3", { text: p.name }), badge),
-      h("div", { class: "pack-meta", text: `v${p.version} · ~${p.size_mb} MB` }),
-      h("p", { class: "pack-desc", text: p.description }),
-      p.credits ? h("div", { class: "pack-credits", text: p.credits }) : null,
-      busyJob ? h("progress", { class: "prog", max: "100", value: String(j.progress || 0) }) : null,
-      acts);
-    box.append(card);
+  }
+
+  const btn = $(`pack-btn-${p.id}`);
+  if (btn) {
+    btn.disabled = busyJob;
+    btn.textContent = busyJob ? `${j.progress || 0}%` : (p.installed ? "Reinstall" : "Install");
+  }
+
+  let prog = $(`pack-prog-${p.id}`);
+  if (busyJob) {
+    if (!prog) {
+      prog = h("progress", { id: `pack-prog-${p.id}`, class: "prog", max: "100", value: String(j.progress || 0) });
+      const acts = $(`pack-acts-${p.id}`);
+      if (acts && acts.parentNode) acts.parentNode.insertBefore(prog, acts);
+    } else {
+      prog.value = String(j.progress || 0);
+    }
+  } else if (prog) {
+    prog.remove();
+  }
+
+  let err = $(`pack-err-${p.id}`);
+  const errMsg = p.lastError || (j.status === "error" ? j.error : "");
+  if (errMsg && !busyJob) {
+    if (!err) {
+      err = h("div", { id: `pack-err-${p.id}`, class: "pack-err", text: errMsg });
+      const acts = $(`pack-acts-${p.id}`);
+      if (acts && acts.parentNode) acts.parentNode.insertBefore(err, acts);
+    } else {
+      err.textContent = errMsg;
+    }
+  } else if (err && !errMsg) {
+    err.remove();
   }
 }
 
 async function installPack(id) {
+  const p = (S.packs || []).find((x) => x.id === id);
+  if (p) { p.lastError = ""; updatePackCard(p); }
   const { data } = await api("/api/content/install", "POST", { id });
-  if (!data.ok) return toast(data.error || "Could not start download.", true);
+  if (!data.ok) {
+    if (p) { p.lastError = data.error || "Could not start download."; updatePackCard(p); }
+    return toast(data.error || "Could not start download.", true);
+  }
   loadContent();
 }
 async function uninstallPack(id) {
@@ -398,6 +482,7 @@ function switchView(v) {
   S.view = v;
   document.querySelectorAll(".tab").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.view === v)));
   document.querySelectorAll(".view").forEach((s) => s.classList.toggle("active", s.id === `view-${v}`));
+  if (v === "content") loadContent();
 }
 async function copyCode() {
   const code = S.relay.room_code; if (!code) return;

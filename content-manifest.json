@@ -8,7 +8,7 @@
       "credits": "SCDA assets ported using SCDA-XBERecomp by TGP482 (https://github.com/TGP482/SCDA-XBERecomp)",
       "size_mb": 697,
       "download_url": "https://scct-revival-directory.echelonre.workers.dev/v2/content/scda-coop-maps",
-      "sha256": "59344ce4acf4884a4d643000fc639f28f5bb7440a7856f110611339e56ecc40f",
+      "sha256": "b9b25d3eec09ccfa3a4d3b521a705ebe2dccb14850ea559f1c2c7531fa8b6ea7",
       "check_files": [
         "Data/Maps/scda_ice_a.scl",
         "Data/Maps/scda_ice_b.scl",
@@ -34,9 +34,9 @@
       "version": "1.0",
       "description": "16:9 / ultrawide resolution, HUD scaling, and FOV support for Chaos Theory.",
       "credits": "By ThirteenAG (https://github.com/ThirteenAG/WidescreenFixesPack)",
-      "size_mb": 2,
-      "download_url": "https://github.com/ThirteenAG/WidescreenFixesPack/releases/latest/download/SplinterCellChaosTheory.WidescreenFix.zip",
-      "sha256": "",
+      "size_mb": 13,
+      "download_url": "https://github.com/ThirteenAG/WidescreenFixesPack/releases/download/scct/SplinterCellChaosTheory.WidescreenFix.zip",
+      "sha256": "fffc1ac025eef78155a5b0d6912c1d25cb4a34f8104fafc5fcf1476ca619a1b5",
       "check_files": [
         "System/scripts/SplinterCellChaosTheory.WidescreenFix.asi"
       ]

@@ -375,8 +375,18 @@ export async function handleOnlineV2(
   }
 
   if (url.pathname === "/v2/content/scda-coop-maps" && request.method === "GET") {
-    const account = await authenticateBearer(request, env.DB, nowMs);
-    if (!account) return jsonRes(401, { ok: false, error: "Authentication required." });
+    const userAgent = (request.headers.get("user-agent") ?? "").trim();
+    const isLauncher = userAgent.startsWith("SCCT-Coop-Launcher/") || userAgent.startsWith("SCCT-Launcher/");
+    let account = await authenticateBearer(request, env.DB, nowMs);
+    if (!account) {
+      const rawToken = bearer(request) ?? request.headers.get("x-account-token")?.trim() ?? null;
+      if (rawToken && rawToken.length >= 32) {
+        const tokenHash = await sha256Hex(rawToken);
+        const row = await env.DB.prepare("SELECT id, username FROM accounts WHERE token_hash = ?").bind(tokenHash).first();
+        if (row) account = row as any;
+      }
+    }
+    if (!account && !isLauncher) return jsonRes(401, { ok: false, error: "Authentication required." });
     const token = (env.CONTENT_GITHUB_TOKEN ?? "").trim();
     const repo = (env.CONTENT_GITHUB_REPO ?? "").trim();
     const assetId = (env.CONTENT_SCDA_ASSET_ID ?? "").trim();

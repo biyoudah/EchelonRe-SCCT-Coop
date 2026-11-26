@@ -15,6 +15,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -136,9 +137,9 @@ DEFAULT_CONTENT_CATALOG = [
         "version": "1.0",
         "description": "16:9 / ultrawide resolution, HUD scaling, and FOV support for Chaos Theory.",
         "credits": "By ThirteenAG (https://github.com/ThirteenAG/WidescreenFixesPack)",
-        "size_mb": 2,
-        "download_url": "https://github.com/ThirteenAG/WidescreenFixesPack/releases/latest/download/SplinterCellChaosTheory.WidescreenFix.zip",
-        "sha256": "",
+        "size_mb": 13,
+        "download_url": "https://github.com/ThirteenAG/WidescreenFixesPack/releases/download/scct/SplinterCellChaosTheory.WidescreenFix.zip",
+        "sha256": "fffc1ac025eef78155a5b0d6912c1d25cb4a34f8104fafc5fcf1476ca619a1b5",
         "check_files": ["System/scripts/SplinterCellChaosTheory.WidescreenFix.asi"],
     },
 ]
@@ -682,8 +683,6 @@ def build_user_view(cloud_user):
         "username": cloud_user["username"],
         "email": cloud_user.get("email", ""),
         "email_verified": bool(cloud_user.get("email_verified", True)),
-        "discord_id": cloud_user.get("discord_id", ""),
-        "discord_username": cloud_user.get("discord_username", ""),
         "exe_path": mod["game_dir"] or prefs["exe_path"],
         "exe_verified": bool(mod["md5_ok"]),
         "exe_md5": mod["exe_md5"],
@@ -764,73 +763,6 @@ def auth_resend_code():
         "/v2/auth/resend-code",
         {"username_or_email": data.get("username_or_email") or data.get("username") or data.get("email") or ""},
     )
-    return jsonify(body), st
-
-
-@app.route("/api/auth/forgot-password", methods=["POST"])
-def auth_forgot_password():
-    data = request.get_json(silent=True) or {}
-    st, body = cloud_request(
-        "POST",
-        "/v2/auth/forgot-password",
-        {"email": data.get("email", "")},
-    )
-    return jsonify(body), st
-
-
-@app.route("/api/auth/reset-password", methods=["POST"])
-def auth_reset_password():
-    data = request.get_json(silent=True) or {}
-    st, body = cloud_request(
-        "POST",
-        "/v2/auth/reset-password",
-        {
-            "email": data.get("email", ""),
-            "code": data.get("code", ""),
-            "password": data.get("password", ""),
-        },
-    )
-    if st == 200 and body.get("ok") and body.get("token"):
-        cloud_token = body["token"]
-        cloud_user = body["user"]
-        raw_local, csrf_token = issue_local_session(cloud_token, cloud_user["username"])
-        resp = make_response(jsonify({
-            "ok": True,
-            "csrf_token": csrf_token,
-            "user": build_user_view(cloud_user),
-            "relay": get_bridge_status(),
-        }))
-        resp.set_cookie("scct_session", raw_local, httponly=True, samesite="Strict", max_age=SESSION_TTL_DAYS * 86400)
-        return resp
-    return jsonify(body), st
-
-
-@app.route("/api/auth/discord/authorize-url", methods=["GET"])
-def auth_discord_authorize_url():
-    """Return the Discord OAuth2 authorize URL so the launcher can open it in the browser."""
-    return jsonify({
-        "ok": True,
-        "url": f"{CLOUD_API_URL}/v2/auth/discord",
-    })
-
-
-@app.route("/api/auth/discord/link", methods=["POST"])
-@require_auth
-def auth_discord_link(sess):
-    data = request.get_json(silent=True) or {}
-    st, body = cloud_request(
-        "POST",
-        "/v2/auth/discord/link",
-        {"link_token": data.get("link_token", "")},
-        bearer_token=sess["cloud_token"],
-    )
-    return jsonify(body), st
-
-
-@app.route("/api/auth/discord/unlink", methods=["POST"])
-@require_auth
-def auth_discord_unlink(sess):
-    st, body = cloud_request("POST", "/v2/auth/discord/unlink", {}, bearer_token=sess["cloud_token"])
     return jsonify(body), st
 
 
@@ -1601,6 +1533,31 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         return new_req
 
 
+def _find_local_pack_archive(pack_id, expected_sha):
+    """Look for an existing local archive file matching the expected sha256 to avoid redundant downloads."""
+    cands = [
+        os.path.join(DATA_DIR, f"{pack_id}.zip"),
+        os.path.join(APP_DIR, f"{pack_id}.zip"),
+        os.path.join(LAUNCHER_DIR, f"{pack_id}.zip"),
+        os.path.join(COOP_NET_DIR, f"{pack_id}.zip"),
+    ]
+    if pack_id == "scda-coop-maps":
+        cands.extend([
+            os.path.join(COOP_NET_DIR, "..", "SCDA_Coop_Maps", "SCDA-Coop-Maps-Pack.zip"),
+            os.path.join(APP_DIR, "..", "SCDA_Coop_Maps", "SCDA-Coop-Maps-Pack.zip"),
+            os.path.join(LAUNCHER_DIR, "..", "SCDA_Coop_Maps", "SCDA-Coop-Maps-Pack.zip"),
+        ])
+    for cand in cands:
+        cand_real = os.path.realpath(cand)
+        if os.path.isfile(cand_real):
+            try:
+                if not expected_sha or file_sha256(cand_real).lower() == expected_sha:
+                    return cand_real
+            except Exception:
+                pass
+    return None
+
+
 def _install_pack_worker(pack, game_root, cloud_token=None):
     pack_id = pack["id"]
     url = str(pack.get("download_url") or "").strip()
@@ -1613,54 +1570,80 @@ def _install_pack_worker(pack, game_root, cloud_token=None):
             _content_jobs[pack_id] = st
         publish("content", st)
 
+    archive_to_extract = None
     try:
-        u = urllib.parse.urlparse(url)
-        if u.scheme != "https" or (u.hostname or "").lower() not in ALLOWED_DOWNLOAD_HOSTS:
-            raise ValueError("Download URL host is not in the allowlist.")
+        local_archive = _find_local_pack_archive(pack_id, expected_sha)
+        if local_archive:
+            set_job("extracting", 85, f"Using local {os.path.basename(local_archive)}...")
+            archive_to_extract = local_archive
+        else:
+            u = urllib.parse.urlparse(url)
+            if u.scheme != "https" or (u.hostname or "").lower() not in ALLOWED_DOWNLOAD_HOSTS:
+                raise ValueError("Download URL host is not in the allowlist.")
 
-        set_job("downloading", 0, f"Downloading {pack['name']}...")
-        headers = {"User-Agent": f"SCCT-Coop-Launcher/{APP_VERSION}"}
-        if cloud_token and url.startswith(CLOUD_API_URL + "/"):
-            headers["Authorization"] = f"Bearer {cloud_token}"
-        req = urllib.request.Request(url, headers=headers)
-        opener = urllib.request.build_opener(_SafeRedirectHandler)
-        h = hashlib.sha256()
-        downloaded = 0
-        with opener.open(req, timeout=60) as resp, open(tmp_zip, "wb") as out:
-            total = int(resp.headers.get("Content-Length") or 0)
-            while True:
-                chunk = resp.read(65536)
-                if not chunk:
-                    break
-                out.write(chunk)
-                h.update(chunk)
-                downloaded += len(chunk)
-                if total > 0:
-                    pct = min(85, int(downloaded * 85 / total))
-                    set_job("downloading", pct, f"Downloading {downloaded // (1024 * 1024)} MB...")
+            set_job("downloading", 0, f"Downloading {pack['name']}...")
+            headers = {"User-Agent": f"SCCT-Coop-Launcher/{APP_VERSION}"}
+            if cloud_token and url.startswith(CLOUD_API_URL + "/"):
+                headers["Authorization"] = f"Bearer {cloud_token}"
+            req = urllib.request.Request(url, headers=headers)
+            opener = urllib.request.build_opener(_SafeRedirectHandler)
+            h = hashlib.sha256()
+            downloaded = 0
+            last_reported_pct = -1
+            last_reported_time = time.time()
+            with opener.open(req, timeout=60) as resp, open(tmp_zip, "wb") as out:
+                total = int(resp.headers.get("Content-Length") or 0)
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    h.update(chunk)
+                    downloaded += len(chunk)
+                    now = time.time()
+                    if total > 0:
+                        pct = min(85, int(downloaded * 85 / total))
+                        if pct > last_reported_pct or (now - last_reported_time) >= 0.5:
+                            last_reported_pct = pct
+                            last_reported_time = now
+                            mb_cur = downloaded // (1024 * 1024)
+                            mb_tot = total // (1024 * 1024)
+                            set_job("downloading", pct, f"Downloading {mb_cur} / {mb_tot} MB ({pct}%)")
+                    else:
+                        if (now - last_reported_time) >= 0.5:
+                            last_reported_time = now
+                            mb_cur = downloaded // (1024 * 1024)
+                            set_job("downloading", 40, f"Downloading {mb_cur} MB...")
 
-        if expected_sha and h.hexdigest().lower() != expected_sha:
-            raise ValueError("Downloaded archive failed SHA-256 verification.")
+            if expected_sha and h.hexdigest().lower() != expected_sha:
+                raise ValueError("Downloaded archive failed SHA-256 verification.")
+            archive_to_extract = tmp_zip
 
-        set_job("extracting", 88, "Extracting files...")
+        set_job("extracting", 86, "Extracting files...")
         game_real = os.path.realpath(game_root)
         installed_files = []
-        with zipfile.ZipFile(tmp_zip, "r") as zf:
-            for member in zf.infolist():
-                if member.is_dir():
-                    continue
+        with zipfile.ZipFile(archive_to_extract, "r") as zf:
+            members = [m for m in zf.infolist() if not m.is_dir()]
+            total_members = len(members)
+            last_ext_time = time.time()
+            for idx, member in enumerate(members):
                 rel = member.filename.replace("\\", "/").lstrip("/")
                 if not rel or ".." in rel.split("/"):
                     continue
                 if os.path.basename(rel).lower() in PROTECTED_RETAIL_BASENAMES:
                     continue
                 dst = os.path.realpath(os.path.join(game_real, rel))
-                if not dst.startswith(game_real + os.sep):
+                if not dst.lower().startswith((game_real + os.sep).lower()):
                     continue
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 with zf.open(member, "r") as src, open(dst, "wb") as dst_f:
                     shutil.copyfileobj(src, dst_f)
                 installed_files.append(os.path.relpath(dst, game_real))
+                now = time.time()
+                if (now - last_ext_time) >= 0.5 and total_members > 0:
+                    last_ext_time = now
+                    ext_pct = 86 + int(idx * 7 / total_members)
+                    set_job("extracting", ext_pct, f"Extracting {idx + 1}/{total_members} files...")
 
         with open(_receipt_path(pack_id), "w", encoding="utf-8") as rf:
             json.dump({"id": pack_id, "version": pack.get("version", ""), "files": installed_files}, rf, indent=2)
@@ -1668,7 +1651,7 @@ def _install_pack_worker(pack, game_root, cloud_token=None):
         _apply_scda_audio_pack(game_real, installed_files, set_job)
         pack_mf_path = os.path.join(game_real, "Data", "Maps", "scda_pack_manifest.json")
         if os.path.isfile(pack_mf_path):
-            set_job("patching", 97, "Updating MapRotation.ini...")
+            set_job("patching", 98, "Updating MapRotation.ini...")
             with open(pack_mf_path, "r", encoding="utf-8") as pmf:
                 scda_maps = json.load(pmf).get("maps") or SCDA_ORDERED_MAPS
             _merge_map_rotation(game_real, scda_maps)
@@ -1680,7 +1663,7 @@ def _install_pack_worker(pack, game_root, cloud_token=None):
         set_job("error", 0, "Install failed.", str(exc))
     finally:
         try:
-            if os.path.isfile(tmp_zip):
+            if archive_to_extract == tmp_zip and os.path.isfile(tmp_zip):
                 os.remove(tmp_zip)
         except Exception:
             pass
