@@ -7,3 +7,7 @@ dist/
 *.scct-revival-journal.json
 tools/captures/
 SCDA_Coop_Maps/
+__pycache__/
+*.pyc
+.pytest_cache/
+

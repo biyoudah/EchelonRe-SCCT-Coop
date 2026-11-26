@@ -70,9 +70,17 @@ async function api(path, method = "GET", body = null) {
   const opts = { method, headers, credentials: "same-origin" };
   if (body !== null) opts.body = JSON.stringify(body);
   let resp;
-  try { resp = await fetch(path, opts); } catch { return { status: 0, data: { ok: false, error: "Launcher backend unreachable." } }; }
+  try {
+    resp = await fetch(path, opts);
+  } catch {
+    return { status: 0, data: { ok: false, error: "Launcher backend unreachable. Please check your connection." } };
+  }
   const data = await resp.json().catch(() => ({ ok: false, error: `HTTP ${resp.status}` }));
-  if (resp.status === 401 && !path.startsWith("/api/auth/")) signedOut();
+  if (resp.status === 429 && !data.retry_after) {
+    const hdr = resp.headers.get("retry-after") || resp.headers.get("Retry-After");
+    if (hdr) data.retry_after = Number(hdr) || 60;
+  }
+  if (resp.status === 401 && path !== "/api/auth/login") signedOut();
   return { status: resp.status, data };
 }
 
@@ -84,7 +92,15 @@ function signedOut() {
   show($("shell"), false); show($("auth"), true);
   authPanel("main"); setMode("login");
 }
-function authPanel(which) { show($("auth-main"), which === "main"); show($("auth-verify"), which === "verify"); }
+function authPanel(which) {
+  show($("auth-main"), which === "main");
+  show($("auth-verify"), which === "verify");
+  show($("auth-forgot"), which === "forgot-1" || which === "forgot-2");
+  if (which === "forgot-1" || which === "forgot-2") {
+    show($("forgot-step-1"), which === "forgot-1");
+    show($("forgot-step-2"), which === "forgot-2");
+  }
+}
 function setMode(mode) {
   S.mode = mode;
   const reg = mode === "register";
@@ -97,19 +113,50 @@ function setMode(mode) {
   show($("auth-err"), false);
   if (reg) rules();
 }
-function rules() {
-  const p = $("f-pass").value;
-  const t = { "r-len": p.length >= 8, "r-up": /[A-Z]/.test(p), "r-low": /[a-z]/.test(p), "r-dig": /\d/.test(p), "r-sp": /[^A-Za-z0-9]/.test(p) };
-  for (const [id, ok] of Object.entries(t)) $(id).classList.toggle("met", ok);
+function checkPasswordRules(password, elementMap) {
+  const p = password || "";
+  const t = {
+    [elementMap.len]: p.length >= 8 && p.length <= 128,
+    [elementMap.up]: /[A-Z]/.test(p),
+    [elementMap.low]: /[a-z]/.test(p),
+    [elementMap.dig]: /\d/.test(p),
+    [elementMap.sp]: /[^A-Za-z0-9]/.test(p),
+  };
+  let allMet = true;
+  for (const [id, ok] of Object.entries(t)) {
+    const el = $(id);
+    if (el) el.classList.toggle("met", ok);
+    if (!ok) allMet = false;
+  }
+  return allMet;
 }
-function err(boxId, msg) { const b = $(boxId); b.textContent = msg; show(b, true); }
+function rules() {
+  return checkPasswordRules($("f-pass").value, {
+    len: "r-len",
+    up: "r-up",
+    low: "r-low",
+    dig: "r-dig",
+    sp: "r-sp",
+  });
+}
+function resetRules() {
+  return checkPasswordRules($("f-reset-pass").value, {
+    len: "rr-len",
+    up: "rr-up",
+    low: "rr-low",
+    dig: "rr-dig",
+    sp: "rr-sp",
+  });
+}
+function err(boxId, msg) { const b = $(boxId); if (b) { b.textContent = msg; show(b, true); } }
 
-function buildOtp() {
-  const box = $("otp");
+function buildOtpBox(boxId, formId) {
+  const box = $(boxId);
+  if (!box) return;
   box.replaceChildren();
   for (let i = 0; i < 6; i++) box.append(h("input", { type: "text", inputmode: "numeric", maxlength: "1", autocomplete: "one-time-code", "aria-label": `Digit ${i + 1}` }));
   const cells = [...box.children];
-  const submitIfFull = () => { if (otpValue().length === 6) $("verify-form").requestSubmit(); };
+  const submitIfFull = () => { if (otpBoxValue(boxId).length === 6) $(formId).requestSubmit(); };
   cells.forEach((c, i) => {
     c.addEventListener("input", () => {
       c.value = c.value.replace(/\D/g, "").slice(-1);
@@ -130,9 +177,33 @@ function buildOtp() {
       submitIfFull();
     });
   });
-  cells[0].focus();
+  if (cells[0]) cells[0].focus();
 }
-const otpValue = () => [...$("otp").children].map((c) => c.value).join("");
+const otpBoxValue = (boxId) => [...($(boxId)?.children || [])].map((c) => c.value).join("");
+const buildOtp = () => buildOtpBox("otp", "verify-form");
+const otpValue = () => otpBoxValue("otp");
+
+function startCooldown(buttonEl, noticeEl, seconds, normalLabel) {
+  if (buttonEl) buttonEl.disabled = true;
+  let remaining = seconds;
+  const update = () => {
+    const txt = `Rate limited. Try again in ${remaining}s...`;
+    if (noticeEl) { noticeEl.textContent = txt; show(noticeEl, true); }
+    if (buttonEl && !noticeEl) buttonEl.textContent = `Wait ${remaining}s...`;
+  };
+  update();
+  const timer = setInterval(() => {
+    remaining -= 1;
+    if (remaining <= 0) {
+      clearInterval(timer);
+      if (buttonEl) { buttonEl.disabled = false; if (normalLabel) buttonEl.textContent = normalLabel; }
+      if (noticeEl) show(noticeEl, false);
+    } else {
+      update();
+    }
+  }, 1000);
+  return timer;
+}
 
 function showVerify(ident, email, delivery, devCode) {
   S.pending = ident;
@@ -143,6 +214,27 @@ function showVerify(ident, email, delivery, devCode) {
   note.textContent = delivery === "dev_fallback" && devCode ? `Email delivery isn’t configured yet. Your code: ${devCode}` : "";
   show(note, Boolean(note.textContent));
   buildOtp();
+}
+
+function showForgotStep1() {
+  authPanel("forgot-1");
+  show($("forgot-1-err"), false);
+  show($("forgot-1-cooldown"), false);
+  $("f-forgot-email").focus();
+}
+
+function showForgotStep2(email, maskedEmail, devCode) {
+  S.resetEmail = email;
+  authPanel("forgot-2");
+  setText($("reset-target"), maskedEmail || email);
+  show($("reset-err"), false);
+  const note = $("reset-note");
+  note.textContent = devCode ? `Dev fallback code: ${devCode}` : "";
+  show(note, Boolean(note.textContent));
+  $("f-reset-pass").value = "";
+  $("f-reset-confirm").value = "";
+  resetRules();
+  buildOtpBox("otp-reset", "forgot-form-2");
 }
 
 async function afterSignIn(data) {
@@ -287,6 +379,18 @@ function renderSettings() {
   set("st-launch", u.launch_exe_installed, "Installed", "Missing");
   const ip = $("local-ip"); if (document.activeElement !== ip) ip.value = u.local_ip || "";
   const mic = $("mic-device"); if (mic && document.activeElement !== mic && mic.options.length) mic.value = String(u.mic_device ?? -1);
+
+  // Discord integration
+  if (u.discord_id) {
+    show($("discord-linked"), true);
+    show($("discord-unlinked"), false);
+    setText($("discord-username-display"), `@${u.discord_username || u.discord_id}`);
+    show($("discord-unlink-err"), false);
+  } else {
+    show($("discord-linked"), false);
+    show($("discord-unlinked"), true);
+    show($("discord-err"), false);
+  }
 }
 
 function row(dot, name, sub, ...acts) {
@@ -547,6 +651,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!username || !password) return err("auth-err", "Enter your username and password.");
     await busy($("auth-submit"), async () => {
       if (S.mode === "register") {
+        if (!rules()) return err("auth-err", "Password must meet all complexity requirements.");
         if (password !== $("f-confirm").value) return err("auth-err", "Passwords don’t match.");
         const { data } = await api("/api/auth/register", "POST", { username, email: $("f-email").value.trim(), password });
         if (!data.ok) return err("auth-err", data.error || "Registration failed.");
@@ -574,11 +679,119 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
   $("btn-resend").addEventListener("click", (e) => busy(e.currentTarget, async () => {
-    const { data } = await api("/api/auth/resend-code", "POST", { username_or_email: S.pending });
+    const { status, data } = await api("/api/auth/resend-code", "POST", { username_or_email: S.pending });
+    if (status === 429) {
+      startCooldown($("btn-resend"), null, data.retry_after || 60, "Resend code");
+      return;
+    }
     if (!data.ok) return err("verify-err", data.error || "Couldn’t resend the code.");
+    startCooldown($("btn-resend"), null, 60, "Resend code");
     showVerify(S.pending, data.email, data.delivery, data.dev_code || ""); toast("New code sent.");
   }));
   $("btn-back").addEventListener("click", () => { authPanel("main"); setMode("login"); });
+
+  // password reset wiring
+  $("link-forgot")?.addEventListener("click", (e) => { e.preventDefault(); showForgotStep1(); });
+  $("btn-forgot-back-1")?.addEventListener("click", () => { authPanel("main"); setMode("login"); });
+  $("btn-forgot-back-2")?.addEventListener("click", () => { authPanel("main"); setMode("login"); });
+
+  $("forgot-form-1")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    show($("forgot-1-err"), false);
+    const email = $("f-forgot-email").value.trim();
+    if (!email) return err("forgot-1-err", "Enter your email address.");
+    await busy($("btn-forgot-send"), async () => {
+      const { status, data } = await api("/api/auth/forgot-password", "POST", { email });
+      if (status === 429) {
+        startCooldown($("btn-forgot-send"), $("forgot-1-cooldown"), data.retry_after || 60, "Send Reset Code");
+        return;
+      }
+      if (!data.ok) return err("forgot-1-err", data.error || "Failed to send reset code.");
+      showForgotStep2(email, data.email, data.dev_code || "");
+      toast("Reset code sent.");
+    });
+  });
+
+  $("f-reset-pass")?.addEventListener("input", resetRules);
+  $("forgot-form-2")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    show($("reset-err"), false);
+    const code = otpBoxValue("otp-reset");
+    if (code.length !== 6) return err("reset-err", "Enter all 6 digits of the reset code.");
+    const password = $("f-reset-pass").value;
+    if (!resetRules()) return err("reset-err", "Password must meet all complexity requirements.");
+    if (password !== $("f-reset-confirm").value) return err("reset-err", "Passwords don’t match.");
+    await busy($("btn-reset-submit"), async () => {
+      const { data } = await api("/api/auth/reset-password", "POST", { email: S.resetEmail, code, password });
+      if (!data.ok) {
+        if (data.error && data.error.includes("expired")) return err("reset-err", "Reset code expired. Request a new one.");
+        if (data.error && data.error.includes("attempt")) return err("reset-err", "Too many failed attempts. Request a new code.");
+        return err("reset-err", data.error || "Password reset failed.");
+      }
+      await afterSignIn(data);
+      toast(`Password reset. Signed in as ${data.user.username}.`);
+    });
+  });
+
+  $("btn-reset-resend")?.addEventListener("click", (e) => busy(e.currentTarget, async () => {
+    const { status, data } = await api("/api/auth/forgot-password", "POST", { email: S.resetEmail });
+    if (status === 429) {
+      startCooldown($("btn-reset-resend"), null, data.retry_after || 60, "Resend code");
+      return;
+    }
+    if (!data.ok) return err("reset-err", data.error || "Couldn’t resend reset code.");
+    startCooldown($("btn-reset-resend"), null, 60, "Resend code");
+    showForgotStep2(S.resetEmail, data.email, data.dev_code || "");
+    toast("New reset code sent.");
+  }));
+
+  // Discord integration wiring
+  let discordAuthUrl = "";
+  $("btn-discord-connect")?.addEventListener("click", (e) => busy(e.currentTarget, async () => {
+    show($("discord-err"), false);
+    const { data } = await api("/api/auth/discord/authorize-url");
+    if (!data.ok || !data.url) return err("discord-err", data.error || "Failed to retrieve Discord authorization URL.");
+    discordAuthUrl = data.url;
+    show($("discord-connect-flow"), true);
+    setText($("discord-url-text"), discordAuthUrl);
+    show($("discord-url-box"), true);
+    api("/api/open-url", "POST", { url: discordAuthUrl });
+    try { window.open(discordAuthUrl, "_blank"); } catch {}
+    $("discord-token")?.focus();
+  }));
+
+  $("btn-discord-copy-url")?.addEventListener("click", () => {
+    if (discordAuthUrl && navigator.clipboard) {
+      navigator.clipboard.writeText(discordAuthUrl);
+      toast("Discord URL copied to clipboard.");
+    }
+  });
+
+  $("btn-discord-link")?.addEventListener("click", (e) => busy(e.currentTarget, async () => {
+    show($("discord-err"), false);
+    const link_token = $("discord-token").value.trim();
+    if (!link_token) return err("discord-err", "Paste the 32-character link code from your browser.");
+    const { data } = await api("/api/auth/discord/link", "POST", { link_token });
+    if (!data.ok) return err("discord-err", data.error || "Failed to link Discord account.");
+    $("discord-token").value = "";
+    if (data.discord) {
+      S.user.discord_id = data.discord.id;
+      S.user.discord_username = data.discord.username;
+    }
+    renderSettings();
+    toast("Discord account linked!");
+  }));
+
+  $("btn-discord-unlink")?.addEventListener("click", (e) => busy(e.currentTarget, async () => {
+    if (!confirm("Are you sure you want to unlink your Discord account?")) return;
+    show($("discord-unlink-err"), false);
+    const { data } = await api("/api/auth/discord/unlink", "POST", {});
+    if (!data.ok) return err("discord-unlink-err", data.error || "Failed to unlink Discord account.");
+    S.user.discord_id = "";
+    S.user.discord_username = "";
+    renderSettings();
+    toast("Discord account unlinked.");
+  }));
 
   document.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.view)));
   $("integrity").addEventListener("click", () => switchView("settings"));

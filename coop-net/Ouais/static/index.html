@@ -38,7 +38,13 @@
       <form id="auth-form" autocomplete="off" novalidate>
         <label class="field"><span id="lbl-user">Username or email</span><input id="f-user" type="text" maxlength="64" autocomplete="username" required></label>
         <label class="field hidden" id="wrap-email"><span>Email (for the verification code)</span><input id="f-email" type="email" maxlength="254" placeholder="you@example.com"></label>
-        <label class="field"><span>Password</span><input id="f-pass" type="password" maxlength="128" autocomplete="current-password" required></label>
+        <label class="field">
+          <div class="field-head">
+            <span>Password</span>
+            <a id="link-forgot" class="link-ghost" href="#" role="button">Forgot password?</a>
+          </div>
+          <input id="f-pass" type="password" maxlength="128" autocomplete="current-password" required>
+        </label>
         <div id="rules" class="rules hidden">
           <span id="r-len">8+ characters</span><span id="r-up">Uppercase</span><span id="r-low">Lowercase</span><span id="r-dig">Number</span><span id="r-sp">Symbol</span>
         </div>
@@ -46,6 +52,42 @@
         <div id="auth-err" class="alert hidden" role="alert"></div>
         <button id="auth-submit" class="btn primary" type="submit">Sign in</button>
       </form>
+    </div>
+
+    <div id="auth-forgot" class="hidden">
+      <div id="forgot-step-1">
+        <h3 class="auth-title">Reset password</h3>
+        <p class="stepnote">Enter the email associated with your account to receive a 6-digit reset code.</p>
+        <form id="forgot-form-1" autocomplete="off">
+          <label class="field"><span>Email</span><input id="f-forgot-email" type="email" maxlength="254" placeholder="you@example.com" required></label>
+          <div id="forgot-1-err" class="alert hidden" role="alert"></div>
+          <div id="forgot-1-cooldown" class="alert info hidden"></div>
+          <button id="btn-forgot-send" class="btn primary" type="submit">Send Reset Code</button>
+          <div class="auth-foot-row">
+            <button id="btn-forgot-back-1" class="btn ghost sm" type="button">Back to sign in</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="forgot-step-2" class="hidden">
+        <h3 class="auth-title">Choose new password</h3>
+        <p class="stepnote">Enter the 6-digit code sent to <b id="reset-target"></b> and set your new password.</p>
+        <div id="reset-note" class="alert info hidden"></div>
+        <form id="forgot-form-2" autocomplete="off">
+          <div class="otp" id="otp-reset"></div>
+          <label class="field"><span>New password</span><input id="f-reset-pass" type="password" maxlength="128" autocomplete="new-password" required></label>
+          <div id="reset-rules" class="rules">
+            <span id="rr-len">8+ characters</span><span id="rr-up">Uppercase</span><span id="rr-low">Lowercase</span><span id="rr-dig">Number</span><span id="rr-sp">Symbol</span>
+          </div>
+          <label class="field"><span>Confirm new password</span><input id="f-reset-confirm" type="password" maxlength="128" autocomplete="new-password" required></label>
+          <div id="reset-err" class="alert hidden" role="alert"></div>
+          <div class="row">
+            <button id="btn-reset-submit" class="btn primary" type="submit">Reset password</button>
+            <button id="btn-reset-resend" class="btn ghost" type="button">Resend code</button>
+            <button id="btn-forgot-back-2" class="btn ghost" type="button">Back to sign in</button>
+          </div>
+        </form>
+      </div>
     </div>
 
     <div id="auth-verify" class="hidden">
@@ -146,6 +188,44 @@
             <div class="row upd-row">
               <button id="btn-check-upd" class="btn">Check for updates</button>
               <button id="btn-apply-upd" class="btn primary hidden">Install &amp; restart</button>
+            </div>
+          </div>
+          <div class="card" id="card-discord">
+            <h3>Discord Integration</h3>
+            <div id="discord-unlinked">
+              <p class="stepnote">Connect your Discord account to display your Discord username and sync your co-op presence.</p>
+              <div class="row" style="margin-bottom: 12px;">
+                <button id="btn-discord-connect" class="btn" type="button">Connect Discord</button>
+              </div>
+              <div id="discord-connect-flow" class="hidden">
+                <div class="flow-steps">
+                  <div class="flow-step">1. Click <b>Connect Discord</b> to authorize in your browser.</div>
+                  <div class="flow-step">2. Copy the 32-character link code from the confirmation page.</div>
+                  <div class="flow-step">3. Paste the link code below and click Link.</div>
+                </div>
+                <div id="discord-url-box" class="flow-url hidden">
+                  <span class="mono" id="discord-url-text"></span>
+                  <button id="btn-discord-copy-url" class="btn sm" type="button">Copy URL</button>
+                </div>
+                <label class="field" style="margin-top: 12px;">
+                  <span>Paste the link code from your browser</span>
+                  <div class="row">
+                    <input id="discord-token" type="text" maxlength="64" placeholder="32-character link code" spellcheck="false" autocomplete="off">
+                    <button id="btn-discord-link" class="btn primary" type="button">Link</button>
+                  </div>
+                </label>
+              </div>
+              <div id="discord-err" class="alert hidden" role="alert" style="margin-top: 12px;"></div>
+            </div>
+            <div id="discord-linked" class="hidden">
+              <div class="opt">
+                <div>
+                  <div class="row"><span class="dot online"></span><span style="font-weight: 600;">Discord: <span id="discord-username-display">@username</span></span></div>
+                  <small style="color: var(--nvg);">Linked account</small>
+                </div>
+                <button id="btn-discord-unlink" class="btn danger sm" type="button">Unlink</button>
+              </div>
+              <div id="discord-unlink-err" class="alert hidden" role="alert" style="margin-top: 12px;"></div>
             </div>
           </div>
         </div>

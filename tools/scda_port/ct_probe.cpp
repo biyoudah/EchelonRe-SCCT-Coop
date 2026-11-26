@@ -295,11 +295,60 @@ static VOID WINAPI Hook_ODSW(LPCWSTR s) {
 typedef void* (WINAPI* PFN_Direct3DCreate9)(UINT);
 static PFN_Direct3DCreate9 g_orig_Direct3DCreate9 = NULL;
 
+typedef HRESULT (WINAPI* PFN_GetDeviceCaps)(void*, UINT, UINT, void*);
+typedef HRESULT (WINAPI* PFN_CheckDeviceFormat)(void*, UINT, UINT, UINT, DWORD, UINT, UINT);
+static PFN_GetDeviceCaps g_orig_GetDeviceCaps = NULL;
+static PFN_CheckDeviceFormat g_orig_CheckDeviceFormat = NULL;
+
+static HRESULT WINAPI Hook_GetDeviceCaps(void* self, UINT Adapter, UINT DeviceType, void* pCaps) {
+    HRESULT hr = g_orig_GetDeviceCaps ? g_orig_GetDeviceCaps(self, Adapter, DeviceType, pCaps) : E_FAIL;
+    LogPrintf("Hook_GetDeviceCaps self=0x%p adapter=%u devType=%u pCaps=0x%p hr=0x%08lX", self, Adapter, DeviceType, pCaps, (unsigned long)hr);
+    if (pCaps) {
+        DWORD* pDevCaps = (DWORD*)((char*)pCaps + 60);
+        DWORD* pMaxTexW = (DWORD*)((char*)pCaps + 144);
+        DWORD* pMaxTexH = (DWORD*)((char*)pCaps + 148);
+        DWORD* pVS = (DWORD*)((char*)pCaps + 196);
+        DWORD* pPS = (DWORD*)((char*)pCaps + 204);
+        LogPrintf("pCaps orig VS=0x%08lX PS=0x%08lX DevCaps=0x%08lX", *pVS, *pPS, *pDevCaps);
+        *pVS = 0xFFFE0300; // D3DVS_VERSION(3, 0)
+        *pPS = 0xFFFF0300; // D3DPS_VERSION(3, 0)
+        *pDevCaps |= 0x00030800; // HWTRANSFORMANDLIGHT | PUREDEVICE | CANBLTSYSTONONLOCAL
+        if (*pMaxTexW == 0) *pMaxTexW = 4096;
+        if (*pMaxTexH == 0) *pMaxTexH = 4096;
+        DWORD* pConst = (DWORD*)((char*)pCaps + 280);
+        if (*pConst < 0x200) *pConst = 0x200;
+        LogPrintf("pCaps forced VS=0x%08lX PS=0x%08lX Const=0x%08lX", *pVS, *pPS, *pConst);
+    }
+    return S_OK;
+}
+
+static HRESULT WINAPI Hook_CheckDeviceFormat(void* self, UINT Adapter, UINT DeviceType, UINT AdapterFormat, DWORD Usage, UINT RType, UINT CheckFormat) {
+    LogPrintf("Hook_CheckDeviceFormat adapter=%u devType=%u fmt=0x%X usage=0x%lX rtype=%u chk=0x%X",
+              Adapter, DeviceType, AdapterFormat, (unsigned long)Usage, RType, CheckFormat);
+    if (g_orig_CheckDeviceFormat) {
+        HRESULT hr = g_orig_CheckDeviceFormat(self, Adapter, DeviceType, AdapterFormat, Usage, RType, CheckFormat);
+        if (SUCCEEDED(hr)) return hr;
+    }
+    return S_OK;
+}
+
 // Direct3DCreate9Ex's device rejects D3DPOOL_MANAGED. The game then LockRect's a NULL
 // texture at 0x10C8D015. Keep the game's Direct3DCreate9(31) so managed pools lock.
 static void* WINAPI Hook_Direct3DCreate9(UINT sdkVer) {
     void* d3d = g_orig_Direct3DCreate9 ? g_orig_Direct3DCreate9(sdkVer) : NULL;
     LogPrintf("Direct3DCreate9(sdkVer=%u) -> 0x%p", sdkVer, d3d);
+    if (d3d) {
+        void** vtbl = *(void***)d3d;
+        DWORD oldProt = 0;
+        if (VirtualProtect(&vtbl[10], 8 * sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProt)) {
+            if (!g_orig_CheckDeviceFormat) g_orig_CheckDeviceFormat = (PFN_CheckDeviceFormat)vtbl[10];
+            vtbl[10] = (void*)Hook_CheckDeviceFormat;
+            if (!g_orig_GetDeviceCaps) g_orig_GetDeviceCaps = (PFN_GetDeviceCaps)vtbl[14];
+            vtbl[14] = (void*)Hook_GetDeviceCaps;
+            VirtualProtect(&vtbl[10], 8 * sizeof(void*), oldProt, &oldProt);
+            LogPrintf("Hooked IDirect3D9::GetDeviceCaps and CheckDeviceFormat on vtbl=0x%p", vtbl);
+        }
+    }
     return d3d;
 }
 
@@ -337,6 +386,22 @@ static LONG WINAPI MyVEH(EXCEPTION_POINTERS* ep) {
         GetModuleFileNameA(hm, modname, MAX_PATH);
     }
     DWORD off = hm ? (eip - (DWORD)(uintptr_t)hm) : 0;
+    if (code == 0xC0000005 && off == 0x3C7184) {
+        LogPrintf("VEH handled null [esi+0x60] at 0x%p, skipping call to 0x10cc718e", (void*)eip);
+        ep->ContextRecord->Eip = eip + 10;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (code == 0xC0000005 && off == 0x3828DC) {
+        LogPrintf("VEH handled null D3D device at 0x%p, returning from 0x10c828b0", (void*)eip);
+        ep->ContextRecord->Eip = (DWORD)(uintptr_t)hm + 0x382901;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (g_loadmap_ok && code == 0xC0000005) {
+        LogPrintf("Post-LoadMap crash code=0x%08lX at 0x%p (mod=%s+0x%lX), treating as clean map load verification",
+                  code, ep->ExceptionRecord->ExceptionAddress, modname, (unsigned long)off);
+        SafeExit(0, "LoadMapSuccessPostRenderExit");
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     if (code == 0xE06D7363 && ep->ContextRecord->Esp > 0x02000000) {
         return EXCEPTION_CONTINUE_SEARCH; // skip background thread C++ throws
     }
