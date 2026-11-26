@@ -25,8 +25,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <cwchar>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifndef SIO_UDP_CONNRESET
@@ -533,10 +535,16 @@ void Logf(const char* fmt, ...) {
 }
 
 bool OpenLog(const std::wstring& path) {
-    InitializeCriticalSection(&g_log_lock);
+    if (!g_log_ready) {
+        InitializeCriticalSection(&g_log_lock);
+        g_log_ready = true;
+    }
+    if (g_log != INVALID_HANDLE_VALUE) {
+        CloseHandle(g_log);
+        g_log = INVALID_HANDLE_VALUE;
+    }
     g_log = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
                         FILE_ATTRIBUTE_NORMAL, nullptr);
-    g_log_ready = true;
     return g_log != INVALID_HANDLE_VALUE;
 }
 
@@ -3035,6 +3043,83 @@ bool InstallHooks() {
     return true;
 }
 
+void LoadLaunchSessionIfNeeded() {
+    wchar_t existing[16]{};
+    if (GetEnvironmentVariableW(L"SCCT_ENABLED", existing, _countof(existing)) > 0) {
+        return;
+    }
+    wchar_t local_app[MAX_PATH]{};
+    const DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", local_app, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) {
+        return;
+    }
+    const std::wstring session_path = std::wstring(local_app) + L"\\SCCTCoopLauncher\\data\\launch_session.ini";
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, session_path.c_str(), L"rb") != 0 || !f) {
+        return;
+    }
+    char buf[8192]{};
+    const size_t got = std::fread(buf, 1, sizeof(buf) - 1, f);
+    std::fclose(f);
+    buf[got] = '\0';
+
+    long long ts = 0;
+    std::vector<std::pair<std::string, std::string>> kvs;
+    size_t i = 0;
+    while (i < got) {
+        size_t end = i;
+        while (end < got && buf[end] != '\n' && buf[end] != '\r') {
+            ++end;
+        }
+        std::string line(buf + i, end - i);
+        i = end + 1;
+        while (i < got && (buf[i] == '\n' || buf[i] == '\r')) {
+            ++i;
+        }
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = line.substr(0, eq);
+        std::string v = line.substr(eq + 1);
+        if (k == "timestamp") {
+            ts = _atoi64(v.c_str());
+        } else if (!k.empty()) {
+            kvs.emplace_back(k, v);
+        }
+    }
+    const long long now_sec = static_cast<long long>(std::time(nullptr));
+    if (ts <= 0 || now_sec - ts > 180 || ts - now_sec > 60) {
+        return;
+    }
+    static const char* const kAllowedKeys[] = {
+        "SCCT_ENABLED", "SCCT_TRANSPORT", "SCCT_RELAY", "SCCT_LOCAL_IP",
+        "SCCT_NAME", "SCCT_FFIRE", "SCCT_VOICE", "SCCT_MIC_DEVICE",
+        "SCCT_MAX_FPS", "SCCT_LAUNCHER_API", "SCCT_INGAME_TOKEN",
+        "SCCT_SHOW", "SCCT_LOG",
+    };
+    for (const auto& kv : kvs) {
+        bool allowed = false;
+        for (const char* ak : kAllowedKeys) {
+            if (kv.first == ak) {
+                allowed = true;
+                break;
+            }
+        }
+        if (!allowed) continue;
+        int wlen_k = MultiByteToWideChar(CP_UTF8, 0, kv.first.c_str(), -1, nullptr, 0);
+        int wlen_v = MultiByteToWideChar(CP_UTF8, 0, kv.second.c_str(), -1, nullptr, 0);
+        if (wlen_k > 0 && wlen_v > 0) {
+            std::wstring wk(static_cast<size_t>(wlen_k), L'\0');
+            std::wstring wv(static_cast<size_t>(wlen_v), L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, kv.first.c_str(), -1, &wk[0], wlen_k);
+            MultiByteToWideChar(CP_UTF8, 0, kv.second.c_str(), -1, &wv[0], wlen_v);
+            wchar_t dummy[8]{};
+            if (GetEnvironmentVariableW(wk.c_str(), dummy, _countof(dummy)) == 0) {
+                SetEnvironmentVariableW(wk.c_str(), wv.c_str());
+            }
+        }
+    }
+}
+
 }  // namespace
 
 extern "C" __declspec(dllexport) int ScctCoopNet_Install() {
@@ -3043,23 +3128,38 @@ extern "C" __declspec(dllexport) int ScctCoopNet_Install() {
         return 5;
     }
 
+    LoadLaunchSessionIfNeeded();
+
     const std::wstring exe = ModuleFile(nullptr);
     const std::wstring dll_dir = DirectoryOf(ModuleFile(g_module));
     wchar_t env_log[MAX_PATH]{};
     const DWORD env_log_len = GetEnvironmentVariableW(L"SCCT_LOG", env_log, MAX_PATH);
-    std::wstring log_path = dll_dir + L"\\scct-coop-net.log";
+    std::wstring log_file_name = L"scct-coop-net.log";
     if (env_log_len > 0 && env_log_len < MAX_PATH && std::wcschr(env_log, L'\\') == nullptr &&
         std::wcschr(env_log, L'/') == nullptr && std::wcschr(env_log, L':') == nullptr) {
-        log_path = dll_dir + L"\\" + env_log;
+        log_file_name = env_log;
     }
-    const bool log_ok = OpenLog(log_path);
+    bool log_ok = OpenLog(dll_dir + L"\\" + log_file_name);
+    if (!log_ok) {
+        wchar_t local_app[MAX_PATH]{};
+        const DWORD la_len = GetEnvironmentVariableW(L"LOCALAPPDATA", local_app, MAX_PATH);
+        if (la_len > 0 && la_len < MAX_PATH) {
+            const std::wstring dir1 = std::wstring(local_app) + L"\\SCCTCoopLauncher";
+            const std::wstring dir2 = dir1 + L"\\data";
+            CreateDirectoryW(dir1.c_str(), nullptr);
+            CreateDirectoryW(dir2.c_str(), nullptr);
+            log_ok = OpenLog(dir2 + L"\\" + log_file_name);
+        }
+    }
+    if (!log_ok) {
+        wchar_t tmp_dir[MAX_PATH]{};
+        const DWORD td_len = GetTempPathW(MAX_PATH, tmp_dir);
+        if (td_len > 0 && td_len < MAX_PATH) {
+            log_ok = OpenLog(std::wstring(tmp_dir) + log_file_name);
+        }
+    }
     char heure[40];
     NowText(heure, sizeof(heure));
-    if (!log_ok) {
-        Logf("heure=%s pid=%lu dir=etat local=- pair=- len=0 hex= seq=0 tronque=0 note=journal inaccessible, hooks non poses",
-             heure, GetCurrentProcessId());
-        return 4;
-    }
 
     const DWORD shot_len = GetEnvironmentVariableW(L"SCCT_SHOT_DIR", g_shot_dir, MAX_PATH);
     if (shot_len == 0 || shot_len >= MAX_PATH) {
@@ -3149,12 +3249,13 @@ extern "C" __declspec(dllexport) int ScctCoopNet_Install() {
 
     HMODULE d3d9 = GetModuleHandleW(L"d3d9.dll");
     const std::string d3d9_path = d3d9 ? Narrow(ModuleFile(d3d9)) : std::string("-");
+    const int widescreen_loaded = GetModuleHandleW(L"SplinterCellChaosTheory.WidescreenFix.asi") != nullptr ? 1 : 0;
 
     Logf("heure=%s pid=%lu dir=etat local=- pair=- len=%llu hex=%s seq=0 tronque=0 "
-         "note=md5_ok=%d taille_ok=%d base_ok=%d nom_ok=%d base=0x%08lX enabled=%d transport=%d local_ip=%s d3d9=%s",
+         "note=md5_ok=%d taille_ok=%d base_ok=%d nom_ok=%d base=0x%08lX enabled=%d transport=%d local_ip=%s d3d9=%s widescreen=%d",
          heure, GetCurrentProcessId(), size, md5_text, md5_ok ? 1 : 0, size_ok ? 1 : 0, base_ok ? 1 : 0,
          name_ok ? 1 : 0, static_cast<unsigned long>(base), config.enabled, config.transport,
-         env_ip_len > 0 ? env_local_ip : "-", d3d9_path.c_str());
+         env_ip_len > 0 ? env_local_ip : "-", d3d9_path.c_str(), widescreen_loaded);
 
     if (!signature_ok) {
         Logf("heure=%s pid=%lu dir=etat local=- pair=- len=0 hex=%s seq=0 tronque=0 "

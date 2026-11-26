@@ -476,24 +476,27 @@ def inspect_and_install_mod(exe_path, install=True):
     dst_ini = os.path.join(game_dir, "scct-coop-net.ini")
 
     if install:
-        if os.path.isfile(src_dll):
-            need_dll = (not os.path.isfile(dst_dll)) or (file_sha256(src_dll) != file_sha256(dst_dll))
-            if need_dll:
-                shutil.copy2(src_dll, dst_dll)
-                info["installed_now"].append("ScctCoopNet.dll")
-        if os.path.isfile(src_proxy):
-            need_proxy = (not os.path.isfile(dst_proxy)) or (file_sha256(src_proxy) != file_sha256(dst_proxy))
-            if need_proxy:
-                shutil.copy2(src_proxy, dst_proxy)
-                info["installed_now"].append("AVIFIL32.dll")
-        if os.path.isfile(src_launch):
-            need_launch = (not os.path.isfile(dst_launch)) or (file_sha256(src_launch) != file_sha256(dst_launch))
-            if need_launch:
-                shutil.copy2(src_launch, dst_launch)
-                info["installed_now"].append("scct-coop-launch.exe")
-        if (not os.path.isfile(dst_ini)) and src_ini:
-            shutil.copy2(src_ini, dst_ini)
-            info["installed_now"].append("scct-coop-net.ini")
+        try:
+            if os.path.isfile(src_dll):
+                need_dll = (not os.path.isfile(dst_dll)) or (file_sha256(src_dll) != file_sha256(dst_dll))
+                if need_dll:
+                    shutil.copy2(src_dll, dst_dll)
+                    info["installed_now"].append("ScctCoopNet.dll")
+            if os.path.isfile(src_proxy):
+                need_proxy = (not os.path.isfile(dst_proxy)) or (file_sha256(src_proxy) != file_sha256(dst_proxy))
+                if need_proxy:
+                    shutil.copy2(src_proxy, dst_proxy)
+                    info["installed_now"].append("AVIFIL32.dll")
+            if os.path.isfile(src_launch):
+                need_launch = (not os.path.isfile(dst_launch)) or (file_sha256(src_launch) != file_sha256(dst_launch))
+                if need_launch:
+                    shutil.copy2(src_launch, dst_launch)
+                    info["installed_now"].append("scct-coop-launch.exe")
+            if (not os.path.isfile(dst_ini)) and src_ini:
+                shutil.copy2(src_ini, dst_ini)
+                info["installed_now"].append("scct-coop-net.ini")
+        except PermissionError:
+            info["error"] = "Permission denied writing to the game folder. Run the launcher as Administrator (required for Program Files)."
 
     info["dll_installed"] = os.path.isfile(dst_dll)
     info["launch_exe_installed"] = os.path.isfile(dst_launch)
@@ -1145,6 +1148,8 @@ def relay_status(sess):
 
 def _launch_for_session(sess, prefs, local_relay_addr):
     mod = inspect_and_install_mod(prefs["exe_path"], install=True)
+    if mod.get("error"):
+        return jsonify({"ok": False, "error": mod["error"]}), 403
     if not mod["exe_exists"]:
         return jsonify({"ok": False, "error": "Link your splintercell3.exe in Settings first."}), 400
     if not mod["md5_ok"]:
@@ -1161,6 +1166,40 @@ def _launch_for_session(sess, prefs, local_relay_addr):
             "cloud_token": sess["cloud_token"],
             "username_lower": sess["username_lower"],
         }
+    max_fps_val = int(prefs.get("max_fps", 60) if prefs.get("max_fps") is not None else 60)
+    mic_dev_val = int(prefs.get("mic_device", -1) if prefs.get("mic_device") is not None else -1)
+    voice_str = "1" if prefs["voice_chat"] else "0"
+    ffire_str = "1" if prefs.get("friendly_fire") else "0"
+    log_name = f"scct-coop-net-{safe_user}.log"
+    api_url = f"http://127.0.0.1:{_SERVER_PORT}"
+
+    # Persist launch session for Ubisoft Connect relaunch (where uplay32.dll exits Process #1
+    # and upc.exe spawns Process #2 without inherited SCCT_* environment variables).
+    session_ini_path = os.path.join(DATA_DIR, "launch_session.ini")
+    try:
+        session_lines = [
+            f"timestamp={int(time.time())}",
+            "SCCT_SHOW=1",
+            "SCCT_ENABLED=1",
+            "SCCT_TRANSPORT=1",
+            f"SCCT_RELAY={local_relay_addr}",
+            f"SCCT_NAME={prefs['username']}",
+            f"SCCT_FFIRE={ffire_str}",
+            f"SCCT_VOICE={voice_str}",
+            f"SCCT_MIC_DEVICE={mic_dev_val}",
+            f"SCCT_MAX_FPS={max_fps_val}",
+            f"SCCT_LAUNCHER_API={api_url}",
+            f"SCCT_INGAME_TOKEN={ingame_token}",
+            f"SCCT_LOG={log_name}",
+        ]
+        if prefs["local_ip"]:
+            session_lines.append(f"SCCT_LOCAL_IP={prefs['local_ip']}")
+        with open(session_ini_path, "w", encoding="utf-8") as sf:
+            sf.write("\n".join(session_lines) + "\n")
+        restrict_windows_acl(session_ini_path, is_dir=False)
+    except Exception:
+        pass
+
     args = [
         launch_exe,
         "--visible",
@@ -1173,17 +1212,17 @@ def _launch_for_session(sess, prefs, local_relay_addr):
         "--name",
         prefs["username"],
         "--voice",
-        "1" if prefs["voice_chat"] else "0",
+        voice_str,
         "--mic-device",
-        str(int(prefs.get("mic_device", -1) if prefs.get("mic_device") is not None else -1)),
+        str(mic_dev_val),
         "--max-fps",
-        str(int(prefs.get("max_fps", 60) if prefs.get("max_fps") is not None else 60)),
+        str(max_fps_val),
         "--api-url",
-        f"http://127.0.0.1:{_SERVER_PORT}",
+        api_url,
         "--api-token",
         ingame_token,
         "--log",
-        f"scct-coop-net-{safe_user}.log",
+        log_name,
     ]
     if prefs["local_ip"]:
         args.extend(["--local-ip", prefs["local_ip"]])
