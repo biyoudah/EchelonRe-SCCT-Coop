@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  worker:
+    name: Worker (TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  launcher:
+    name: Launcher (Python)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: coop-net/Ouais
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: coop-net/Ouais/requirements.txt
+      - run: pip install -r requirements.txt
+      - run: python -m compileall -q .
+      - run: python -c "import server, ws_bridge, p2p_ice; print('Imports OK')"
+
+  dll:
+    name: In-Game DLL (C++ / CMake)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: coop-net
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure CMake (Win32)
+        run: cmake -S . -B build -A Win32
+      - name: Build Release
+        run: cmake --build build --Config Release
+
+  tools:
+    name: Porting Tools (Python)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/scda_port
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m compileall -q .
+      - run: python -m pytest test_map_ct.py test_mesh_convert.py -x -q
