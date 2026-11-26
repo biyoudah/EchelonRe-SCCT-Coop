@@ -1,0 +1,45 @@
+{
+  "packs": [
+    {
+      "id": "scda-coop-maps",
+      "name": "SCDA Co-op Maps Pack",
+      "version": "1.0.0",
+      "description": "All 14 ported Splinter Cell: Double Agent Xbox co-op missions (Iceland, Prison, Kinshasa) with DareAudio SFX/dialogue banks, loading screens, and localization.",
+      "credits": "SCDA assets ported using SCDA-XBERecomp by TGP482 (https://github.com/TGP482/SCDA-XBERecomp)",
+      "size_mb": 697,
+      "download_url": "https://scct-revival-directory.echelonre.workers.dev/v2/content/scda-coop-maps",
+      "sha256": "59344ce4acf4884a4d643000fc639f28f5bb7440a7856f110611339e56ecc40f",
+      "check_files": [
+        "Data/Maps/scda_ice_a.scl",
+        "Data/Maps/scda_ice_b.scl",
+        "Data/Maps/scda_ice_c.scl",
+        "Data/Maps/scda_ice_d.scl",
+        "Data/Maps/scda_ice_e.scl",
+        "Data/Maps/scda_pris_a.scl",
+        "Data/Maps/scda_pris_b.scl",
+        "Data/Maps/scda_pris_c.scl",
+        "Data/Maps/scda_pris_d.scl",
+        "Data/Maps/scda_pris_e.scl",
+        "Data/Maps/scda_kin_a.scl",
+        "Data/Maps/scda_kin_b.scl",
+        "Data/Maps/scda_kin_c.scl",
+        "Data/Maps/scda_kin_f.scl",
+        "Data/Sounds/SCDA_MAPS.SM0",
+        "System/Localization/scda_override.int"
+      ]
+    },
+    {
+      "id": "widescreen-fix",
+      "name": "Widescreen Fix (ThirteenAG)",
+      "version": "1.0",
+      "description": "16:9 / ultrawide resolution, HUD scaling, and FOV support for Chaos Theory.",
+      "credits": "By ThirteenAG (https://github.com/ThirteenAG/WidescreenFixesPack)",
+      "size_mb": 2,
+      "download_url": "https://github.com/ThirteenAG/WidescreenFixesPack/releases/latest/download/SplinterCellChaosTheory.WidescreenFix.zip",
+      "sha256": "",
+      "check_files": [
+        "System/scripts/SplinterCellChaosTheory.WidescreenFix.asi"
+      ]
+    }
+  ]
+}

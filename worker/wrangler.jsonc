@@ -1,0 +1,36 @@
+{
+  // Free-plan directory. Limits and the date they were checked: docs/revival/00_costs.md
+  // (Friday Nov 6, 2026). No KV, no R2, no Cron Trigger, no inbound UDP.
+  "name": "scct-revival-directory",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-06",
+  "workers_dev": true,
+  "observability": {
+    "enabled": false
+  },
+  "vars": {
+    "EMULATOR_ENABLED": "0"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "LOBBY",
+        "class_name": "LobbyDirectory"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["LobbyDirectory"]
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "scct-echelonre",
+      "database_id": "a7f8a187-7bd3-49fb-b431-8de8c34cb56a",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

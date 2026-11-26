@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+**/bin/
+**/obj/
+*.scct-revival-journal.json
+tools/captures/
+SCDA_Coop_Maps/

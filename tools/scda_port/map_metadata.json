@@ -1,0 +1,18 @@
+{
+  "maps": {
+    "x01_coop_ice_a": { "out_name": "scda_ice_a", "campaign": "Iceland", "display_name": "SCDA: Iceland - Part 1", "identity": 210, "music": "mus_01_iceland.ss2" },
+    "x01_coop_ice_b": { "out_name": "scda_ice_b", "campaign": "Iceland", "display_name": "SCDA: Iceland - Part 2", "identity": 211, "music": "mus_01_iceland.ss2" },
+    "x01_coop_ice_c": { "out_name": "scda_ice_c", "campaign": "Iceland", "display_name": "SCDA: Iceland - Part 3", "identity": 212, "music": "mus_01_iceland.ss2" },
+    "x01_coop_ice_d": { "out_name": "scda_ice_d", "campaign": "Iceland", "display_name": "SCDA: Iceland - Part 4", "identity": 213, "music": "mus_01_iceland.ss2" },
+    "x01_coop_ice_e": { "out_name": "scda_ice_e", "campaign": "Iceland", "display_name": "SCDA: Iceland - Part 5", "identity": 214, "music": "mus_01_iceland.ss2" },
+    "x02_coop_pris_a": { "out_name": "scda_pris_a", "campaign": "Prison", "display_name": "SCDA: Prison - Part 1", "identity": 215, "music": "mus_02_prison.ss2" },
+    "x02_coop_pris_b": { "out_name": "scda_pris_b", "campaign": "Prison", "display_name": "SCDA: Prison - Part 2", "identity": 216, "music": "mus_02_prison.ss2" },
+    "x02_coop_pris_c": { "out_name": "scda_pris_c", "campaign": "Prison", "display_name": "SCDA: Prison - Part 3", "identity": 217, "music": "mus_02_prison.ss2" },
+    "x02_coop_pris_d": { "out_name": "scda_pris_d", "campaign": "Prison", "display_name": "SCDA: Prison - Part 4", "identity": 218, "music": "mus_02_prison.ss2" },
+    "x02_coop_pris_e": { "out_name": "scda_pris_e", "campaign": "Prison", "display_name": "SCDA: Prison - Part 5", "identity": 219, "music": "mus_02_prison.ss2" },
+    "x03_coop_kin_a": { "out_name": "scda_kin_a", "campaign": "Kinshasa", "display_name": "SCDA: Kinshasa - Part 1", "identity": 220, "music": "mus_10_kinshasa.ss2" },
+    "x03_coop_kin_b": { "out_name": "scda_kin_b", "campaign": "Kinshasa", "display_name": "SCDA: Kinshasa - Part 2", "identity": 221, "music": "mus_10_kinshasa.ss2" },
+    "x03_coop_kin_c": { "out_name": "scda_kin_c", "campaign": "Kinshasa", "display_name": "SCDA: Kinshasa - Part 3", "identity": 222, "music": "mus_10_kinshasa.ss2" },
+    "x03_coop_kin_f": { "out_name": "scda_kin_f", "campaign": "Kinshasa", "display_name": "SCDA: Kinshasa - Part 4", "identity": 223, "music": "mus_10_kinshasa.ss2" }
+  }
+}

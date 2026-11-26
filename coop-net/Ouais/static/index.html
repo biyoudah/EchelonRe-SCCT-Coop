@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>SCCT Co-op Launcher</title>
+<link rel="icon" type="image/png" href="assets/scct_icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<svg width="0" height="0" aria-hidden="true" focusable="false" class="sprite">
+  <symbol id="i-min" viewBox="0 0 16 16"><path d="M3 8h10"/></symbol>
+  <symbol id="i-close" viewBox="0 0 16 16"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></symbol>
+  <symbol id="i-out" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="M3 8.5l3.2 3L13 4.5"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3l10 18H2zM12 10v5M12 18v.01"/></symbol>
+  <symbol id="i-x" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
+</svg>
+
+<!-- ===== Auth ===== -->
+<main id="auth">
+  <section class="auth-l">
+    <div class="logo pywebview-drag-region">
+      <img src="assets/emblem.svg" alt="">
+      <div><b>Chaos Theory Co-op</b><span>Splinter Cell launcher</span></div>
+    </div>
+
+    <div id="auth-main">
+      <div class="mode" role="tablist">
+        <button type="button" role="tab" id="tab-login" aria-selected="true" data-mode="login">Sign in</button>
+        <button type="button" role="tab" id="tab-register" aria-selected="false" data-mode="register">Create account</button>
+      </div>
+      <form id="auth-form" autocomplete="off" novalidate>
+        <label class="field"><span id="lbl-user">Username or email</span><input id="f-user" type="text" maxlength="64" autocomplete="username" required></label>
+        <label class="field hidden" id="wrap-email"><span>Email (for the verification code)</span><input id="f-email" type="email" maxlength="254" placeholder="you@example.com"></label>
+        <label class="field"><span>Password</span><input id="f-pass" type="password" maxlength="128" autocomplete="current-password" required></label>
+        <div id="rules" class="rules hidden">
+          <span id="r-len">8+ characters</span><span id="r-up">Uppercase</span><span id="r-low">Lowercase</span><span id="r-dig">Number</span><span id="r-sp">Symbol</span>
+        </div>
+        <label class="field hidden" id="wrap-confirm"><span>Confirm password</span><input id="f-confirm" type="password" maxlength="128"></label>
+        <div id="auth-err" class="alert hidden" role="alert"></div>
+        <button id="auth-submit" class="btn primary" type="submit">Sign in</button>
+      </form>
+    </div>
+
+    <div id="auth-verify" class="hidden">
+      <p class="stepnote">Enter the 6-digit code sent to <b id="verify-target"></b>.</p>
+      <div id="verify-note" class="alert info hidden"></div>
+      <form id="verify-form" autocomplete="off">
+        <div class="otp" id="otp"></div>
+        <div id="verify-err" class="alert hidden" role="alert"></div>
+        <div class="row">
+          <button id="verify-submit" class="btn primary" type="submit">Verify and sign in</button>
+          <button id="btn-resend" class="btn ghost" type="button">Resend code</button>
+          <button id="btn-back" class="btn ghost" type="button">Back</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="grow"></div>
+    <div class="foot">Game traffic is relayed over Cloudflare. No port forwarding needed.</div>
+  </section>
+  <section class="auth-r">
+    <div class="drag pywebview-drag-region"></div>
+    <div class="winctl"><button class="tb-btn" data-win="minimize" aria-label="Minimize"><svg class="ico"><use href="#i-min"/></svg></button><button class="tb-btn close" data-win="close" aria-label="Close"><svg class="ico"><use href="#i-close"/></svg></button></div>
+  </section>
+</main>
+
+<!-- ===== Launcher ===== -->
+<div id="shell" class="hidden">
+  <header class="titlebar pywebview-drag-region">
+    <div class="brand pywebview-drag-region"><img src="assets/emblem.svg" alt="">SCCT CO-OP</div>
+    <nav class="tabs" role="tablist">
+      <button class="tab" role="tab" aria-selected="true" data-view="play">Play</button>
+      <button class="tab" role="tab" aria-selected="false" data-view="rooms">Rooms</button>
+      <button class="tab" role="tab" aria-selected="false" data-view="content">Maps &amp; Mods</button>
+      <button class="tab" role="tab" aria-selected="false" data-view="settings">Settings</button>
+    </nav>
+    <div class="drag pywebview-drag-region"></div>
+    <div class="tb-right">
+      <button id="btn-update-pill" class="btn sm primary hidden" title="Install launcher update">Update</button>
+      <div class="who"><span class="avatar" id="avatar">A</span><span id="who-name"></span></div>
+      <button id="btn-social" class="tb-btn" aria-pressed="true" aria-label="Friends"><svg class="ico"><use href="#i-users"/></svg><span id="req-badge" class="badge hidden">0</span></button>
+      <button id="btn-logout" class="tb-btn" aria-label="Sign out" title="Sign out"><svg class="ico"><use href="#i-out"/></svg></button>
+      <div class="winctl"><button class="tb-btn" data-win="minimize" aria-label="Minimize"><svg class="ico"><use href="#i-min"/></svg></button><button class="tb-btn close" data-win="close" aria-label="Close"><svg class="ico"><use href="#i-close"/></svg></button></div>
+    </div>
+  </header>
+
+  <div class="stage">
+    <div class="views">
+      <section id="view-play" class="view active">
+        <div class="hero" role="img" aria-label="Splinter Cell: Chaos Theory key art"></div>
+        <div class="lockup"><div class="kicker">TOM CLANCY’S SPLINTER CELL</div><div class="title">CHAOS THEORY</div><div class="co">CO-OP</div></div>
+        <div id="banner" class="banner hidden">
+          <svg class="ico"><use href="#i-warn"/></svg>
+          <span>Link your Splinter Cell: Chaos Theory folder (v1.05) to install the co-op mod.</span>
+          <button class="btn sm" data-view="settings">Open settings</button>
+        </div>
+      </section>
+
+      <section id="view-rooms" class="view"><div class="page">
+        <h2>Rooms</h2>
+        <p class="lede">Open rooms from the cloud directory. Hosting creates a room and bridges your game to it; join one with a single click.</p>
+        <div class="row" id="host-row"><button id="btn-host" class="btn primary">Host a room</button></div>
+        <div class="card" id="rooms-card"><h3>Open rooms</h3><div id="rooms-list"></div><div id="rooms-empty" class="empty">No open rooms right now.</div></div>
+      </div></section>
+
+      <section id="view-content" class="view"><div class="page">
+        <h2>Maps &amp; Mods</h2>
+        <p class="lede">Download and manage optional co-op map packs (including Double Agent co-op ports) and visual fixes directly into your linked Chaos Theory folder.</p>
+        <div id="content-list" class="pack-grid"></div>
+      </div></section>
+
+      <section id="view-settings" class="view"><div class="page">
+        <h2>Settings</h2>
+        <p class="lede">Verify your Chaos Theory game folder and check for launcher updates. Voice meter is toggled from the dock on the Play screen.</p>
+        <div class="grid2">
+          <div class="card">
+            <h3>Game installation</h3>
+            <label class="field"><span>Game folder (Splinter Cell: Chaos Theory)</span>
+              <div class="row"><input id="exe-path" type="text" placeholder="D:\Games\Splinter Cell Chaos Theory" spellcheck="false">
+              <button id="btn-browse" class="btn icon" aria-label="Browse folder"><svg class="ico"><use href="#i-folder"/></svg></button></div></label>
+            <div class="row"><button id="btn-link" class="btn primary">Verify and install mod</button><button id="btn-detect" class="btn ghost hidden">Use detected folder</button></div>
+            <div class="facts">
+              <div class="fact"><span>Executable</span><b id="st-exe">—</b></div>
+              <div class="fact"><span>v1.05 signature</span><b id="st-md5">—</b></div>
+              <div class="fact"><span>ScctCoopNet.dll</span><b id="st-dll">—</b></div>
+              <div class="fact"><span>scct-coop-launch.exe</span><b id="st-launch">—</b></div>
+            </div>
+          </div>
+          <div class="card">
+            <h3>Advanced</h3>
+            <label class="field"><span>Microphone (press F8 in-game to cycle live)</span>
+              <select id="mic-device"></select></label>
+            <label class="field"><span>Local bind IP (single-PC testing only)</span>
+              <div class="row"><input id="local-ip" type="text" placeholder="Blank for normal online play" spellcheck="false"><button id="btn-save-ip" class="btn">Save</button></div></label>
+            <div class="facts">
+              <div class="fact"><span>Launcher version</span><b id="st-ver">2.1.0</b></div>
+              <div class="fact"><span>Update status</span><b id="st-upd">Not checked</b></div>
+            </div>
+            <div class="row upd-row">
+              <button id="btn-check-upd" class="btn">Check for updates</button>
+              <button id="btn-apply-upd" class="btn primary hidden">Install &amp; restart</button>
+            </div>
+          </div>
+        </div>
+      </div></section>
+    </div>
+
+    <aside id="social" class="social">
+      <div class="social-head">
+        <h3>Friends</h3>
+        <form id="friend-form" class="row"><input id="friend-name" type="text" maxlength="19" placeholder="Add by username" required>
+          <button class="btn icon" type="submit" aria-label="Send friend request"><svg class="ico"><use href="#i-plus"/></svg></button></form>
+      </div>
+      <div class="social-body">
+        <div id="g-in" class="hidden"><div class="group">Requests</div><div id="l-in"></div></div>
+        <div id="g-fr"><div class="group">Friends</div><div id="l-fr"></div><div id="fr-empty" class="empty friend">No friends yet.</div></div>
+        <div id="g-out" class="hidden"><div class="group">Sent</div><div id="l-out"></div></div>
+      </div>
+    </aside>
+  </div>
+
+  <footer class="dock">
+    <div class="dock-l">
+      <button id="btn-play" class="play"></button>
+      <button id="integrity" class="integrity" title="Open game settings"><span class="dot"></span><span id="integrity-text"></span></button>
+      <div class="quick">
+        <div class="q"><button class="switch" role="switch" aria-checked="true" id="q-voice" aria-label="Voice meter"></button>Voice meter</div>
+      </div>
+    </div>
+    <div class="dock-r" id="dock-room"></div>
+  </footer>
+</div>
+
+<div id="toasts" aria-live="polite"></div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,145 @@
+openapi: 3.0.3
+info:
+  title: SCCT Revival directory
+  version: "0.1.0"
+  description: |
+    HTTP lobby list for players who already own Splinter Cell Chaos Theory.
+    This service does not serve the game, a crack, or a key. It does not carry
+    UDP. Coop accepts max_players 2 only. Versus 2..8 is a service cap, not a
+    confirmed team size (docs/revival/06_player_cap_research.md).
+servers:
+  - url: https://scct-revival-directory.example.workers.dev
+paths:
+  /v1/health:
+    get:
+      summary: Liveness and emulator flag
+      responses:
+        "200":
+          description: Emulator is off, or blocked when the flag is set. UDP is never opened.
+  /v1/accounts:
+    post:
+      summary: Register a username and store SHA-256 of the password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [username, password]
+              properties:
+                username: { type: string, minLength: 2, maxLength: 15 }
+                password: { type: string, minLength: 2, maxLength: 64 }
+      responses:
+        "201":
+          description: Account id and a one-time token. The password is not returned.
+        "400":
+          description: Empty or rejected username or password
+        "409":
+          description: Username already exists
+        "429":
+          description: Rate limit
+  /v1/accounts/login:
+    post:
+      summary: Check a username against the stored SHA-256 password hash
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        "200":
+          description: New account token. The password is not returned.
+        "401":
+          description: Unknown username or password hash mismatch
+        "400":
+          description: Rejected body
+        "429":
+          description: Rate limit
+  /v1/lobbies:
+    get:
+      summary: List lobbies seen in the last 60 seconds
+      parameters:
+        - in: query
+          name: mode
+          schema: { type: string, enum: [coop, versus] }
+      responses:
+        "200":
+          description: Public rows. Tokens are not included.
+    post:
+      summary: Register a lobby the caller is already hosting in the retail game
+      parameters:
+        - in: header
+          name: X-Account-Token
+          required: false
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [host_name, mode, address, port, max_players]
+              properties:
+                host_name: { type: string }
+                mode: { type: string, enum: [coop, versus] }
+                address: { type: string }
+                port: { type: integer, minimum: 1, maximum: 65535 }
+                map: { type: string }
+                max_players: { type: integer }
+      responses:
+        "201":
+          description: Lobby token, shown once. Heartbeat every 30 seconds.
+        "400":
+          description: Validation failed
+        "401":
+          description: Account token was sent and is not valid
+        "429":
+          description: More than 8 requests in 60 seconds from this client
+        "503":
+          description: 32 lobbies are already listed
+  /v1/lobbies/{id}/heartbeat:
+    post:
+      summary: Refresh last_seen. Empty body.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: header
+          name: Authorization
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Refreshed
+        "403":
+          description: Wrong lobby token
+        "404":
+          description: Unknown id
+  /v1/lobbies/{id}:
+    delete:
+      summary: Remove a lobby
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: header
+          name: Authorization
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Removed
+        "403":
+          description: Wrong lobby token
+        "404":
+          description: Unknown id

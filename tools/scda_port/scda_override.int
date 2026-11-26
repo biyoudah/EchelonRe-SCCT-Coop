@@ -1,0 +1,25 @@
+[Interaction]
+InitBackToBackClimbing=Back-to-Back Climb
+CompleteBackToBackClimbing=Complete Back-to-Back Climb
+CancelBackToBackClimbing=Cancel Back-to-Back
+BackToBackClimbing=Back-to-Back Climb
+TeamInterrogation=Dual Interrogation
+Intimidate=Intimidate
+KeyCard=Take Keycard
+CardReader=Use Card Reader
+Document=Pick Up Document
+Breaker01=Pull Breaker 1
+Breaker02=Pull Breaker 2
+Tutorial=Show Tutorial
+EndMission=Extract
+Talktognome=Talk To
+PickupObject=Pick Up Document
+Custom interaction=Interact
+
+[HUD]
+InitBackToBackClimbing=Back-to-Back Climb
+CompleteBackToBackClimbing=Complete Back-to-Back Climb
+TeamInterrogation=Dual Interrogation
+
+[Progress]
+Loading=Loading...

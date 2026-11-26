@@ -1,0 +1,7 @@
+LIBRARY ScctCoopNet
+EXPORTS
+    ScctCoopNet_Install
+    ScctCoopNet_Deposit
+    ScctCoopNet_AttachRelay
+    ScctCoopNet_Peer
+    ScctCoopNet_Stop
