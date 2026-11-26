@@ -13,7 +13,10 @@ REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, HERE)
 import reconstruct_packages as rp
 import mesh_convert as mc
-import convert_loading
+try:
+    import convert_loading
+except ImportError:
+    convert_loading = None
 
 # SCDA-only classes mapped to closest retail SCCT PC equivalents
 SCDA_CLASS_MAP = {

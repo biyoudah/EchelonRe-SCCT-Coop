@@ -53,10 +53,12 @@ jobs:
         working-directory: coop-net
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Configure CMake (Win32)
         run: cmake -S . -B build -A Win32
       - name: Build Release
-        run: cmake --build build --Config Release
+        run: cmake --build build --config Release
 
   tools:
     name: Porting Tools (Python)
@@ -69,5 +71,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - run: pip install pytest
       - run: python -m compileall -q .
-      - run: python -m pytest test_map_ct.py test_mesh_convert.py -x -q
+      - run: python -m pytest -v
