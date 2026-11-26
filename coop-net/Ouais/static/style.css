@@ -189,9 +189,16 @@ body.native .winctl{display:flex}
 .pack-meta{font-size:12px;color:var(--ink-3);margin-bottom:8px;font-family:var(--mono)}
 .pack-desc{margin:0 0 10px;color:var(--ink-2);font-size:13px}
 .pack-credits{margin:0 0 14px;color:var(--ink-3);font-size:11.5px;line-height:1.4}
+.pack-badges{display:flex;align-items:center;gap:6px}
 .pack-badge{font-size:12px;padding:2px 8px;border-radius:var(--r);background:var(--elevated);color:var(--ink-2)}
 .pack-badge.ok{background:rgba(100,220,75,.16);color:var(--nvg)}
 .pack-badge.err{background:rgba(239,68,68,.16);color:#f87171}
+.pack-badge.warn{background:rgba(245,158,11,.16);color:#fbbf24}
+.pack-badge.disabled{background:var(--elevated);color:var(--ink-3)}
+.pack-note{font-size:12px;color:var(--ink-3);margin:0 0 10px;font-style:italic}
+.pack-actions-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}
+.pack-toggle-row{display:flex;align-items:center;gap:8px;cursor:pointer}
+.pack-toggle-lbl{font-size:13px;color:var(--ink-2);user-select:none}
 .pack-err{margin:0 0 12px;font-size:12px;color:#f87171;word-break:break-word;background:rgba(239,68,68,.08);padding:6px 10px;border-radius:var(--r);border-left:3px solid #f87171}
 progress.prog{width:100%;height:6px;margin-bottom:12px;accent-color:var(--nvg)}
 .upd-row{margin-top:16px}

@@ -253,6 +253,7 @@ def init_db():
                     friendly_fire INTEGER NOT NULL DEFAULT 0,
                     voice_chat INTEGER NOT NULL DEFAULT 1,
                     mic_device INTEGER NOT NULL DEFAULT -1,
+                    max_fps INTEGER NOT NULL DEFAULT 60,
                     local_ip TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL
                 );
@@ -269,6 +270,8 @@ def init_db():
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(user_prefs)").fetchall()}
             if "mic_device" not in cols:
                 conn.execute("ALTER TABLE user_prefs ADD COLUMN mic_device INTEGER NOT NULL DEFAULT -1")
+            if "max_fps" not in cols:
+                conn.execute("ALTER TABLE user_prefs ADD COLUMN max_fps INTEGER NOT NULL DEFAULT 60")
             conn.commit()
         finally:
             conn.close()
@@ -513,8 +516,8 @@ def get_or_create_prefs(username):
                 exe_verified = prev["exe_verified"] if prev else 0
                 conn.execute(
                     """
-                    INSERT INTO user_prefs (username_lower, username, exe_path, exe_md5, exe_verified, friendly_fire, voice_chat, local_ip, updated_at)
-                    VALUES (?, ?, ?, ?, ?, 0, 1, '', ?)
+                    INSERT INTO user_prefs (username_lower, username, exe_path, exe_md5, exe_verified, friendly_fire, voice_chat, mic_device, max_fps, local_ip, updated_at)
+                    VALUES (?, ?, ?, ?, ?, 0, 1, -1, 60, '', ?)
                     """,
                     (low, username, exe_path, exe_md5, exe_verified, utc_now_iso()),
                 )
@@ -695,6 +698,7 @@ def build_user_view(cloud_user):
         "friendly_fire": bool(prefs["friendly_fire"]),
         "voice_chat": bool(prefs["voice_chat"]),
         "mic_device": int(prefs.get("mic_device", -1) if prefs.get("mic_device") is not None else -1),
+        "max_fps": int(prefs.get("max_fps", 60) if prefs.get("max_fps") is not None else 60),
         "local_ip": prefs["local_ip"],
         "active_room": relay["room_code"] or cloud_user.get("active_room", ""),
         "detected_exe_hint": detect_existing_exe(),
@@ -1002,13 +1006,26 @@ def setup_settings(sess):
         except ipaddress.AddressValueError:
             return jsonify({"ok": False, "error": "Local bind IP must be valid IPv4 or blank."}), 400
 
+    max_fps = None
+    if "max_fps" in data:
+        try:
+            max_fps = max(0, min(240, int(data["max_fps"])))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "Invalid max FPS setting."}), 400
+
     with _db_lock:
         conn = get_db()
         try:
-            conn.execute(
-                "UPDATE user_prefs SET friendly_fire=?, voice_chat=?, mic_device=?, local_ip=?, updated_at=? WHERE username_lower=?",
-                (friendly_fire, voice_chat, mic_device, local_ip, utc_now_iso(), sess["username_lower"]),
-            )
+            if max_fps is not None:
+                conn.execute(
+                    "UPDATE user_prefs SET friendly_fire=?, voice_chat=?, mic_device=?, max_fps=?, local_ip=?, updated_at=? WHERE username_lower=?",
+                    (friendly_fire, voice_chat, mic_device, max_fps, local_ip, utc_now_iso(), sess["username_lower"]),
+                )
+            else:
+                conn.execute(
+                    "UPDATE user_prefs SET friendly_fire=?, voice_chat=?, mic_device=?, local_ip=?, updated_at=? WHERE username_lower=?",
+                    (friendly_fire, voice_chat, mic_device, local_ip, utc_now_iso(), sess["username_lower"]),
+                )
             conn.commit()
         finally:
             conn.close()
@@ -1159,6 +1176,8 @@ def _launch_for_session(sess, prefs, local_relay_addr):
         "1" if prefs["voice_chat"] else "0",
         "--mic-device",
         str(int(prefs.get("mic_device", -1) if prefs.get("mic_device") is not None else -1)),
+        "--max-fps",
+        str(int(prefs.get("max_fps", 60) if prefs.get("max_fps") is not None else 60)),
         "--api-url",
         f"http://127.0.0.1:{_SERVER_PORT}",
         "--api-token",
@@ -1392,6 +1411,7 @@ def ingame_mic_set():
 
 
 def _load_content_catalog():
+    packs = None
     if CONTENT_MANIFEST_URL:
         try:
             u = urllib.parse.urlparse(CONTENT_MANIFEST_URL)
@@ -1400,10 +1420,25 @@ def _load_content_catalog():
                 with urllib.request.urlopen(req, timeout=4) as resp:
                     parsed = json.loads(resp.read().decode("utf-8", errors="replace"))
                     if isinstance(parsed, dict) and isinstance(parsed.get("packs"), list):
-                        return parsed["packs"]
+                        packs = parsed["packs"]
         except Exception:
             pass
-    return [dict(p) for p in DEFAULT_CONTENT_CATALOG]
+    if packs is None:
+        packs = [dict(p) for p in DEFAULT_CONTENT_CATALOG]
+    else:
+        packs = [dict(p) for p in packs]
+
+    fps_entry = {
+        "id": "fps-cap-60",
+        "name": "60 FPS Cap",
+        "type": "builtin",
+        "experimental": True,
+        "description": "Locks the game loop at 60 FPS via ScctCoopNet.dll. Both co-op players should use the same setting.",
+        "credits": "EchelonRe builtin",
+    }
+    if not any(p.get("id") == "fps-cap-60" for p in packs):
+        packs.append(fps_entry)
+    return packs
 
 
 def _receipt_path(pack_id):
@@ -1412,12 +1447,55 @@ def _receipt_path(pack_id):
 
 
 def _pack_installed(pack, game_root):
+    if pack.get("id") == "fps-cap-60":
+        return True
     if not game_root or not os.path.isdir(game_root):
         return os.path.isfile(_receipt_path(pack["id"]))
+    rec_path = _receipt_path(pack["id"])
+    if os.path.isfile(rec_path):
+        return True
     check_files = pack.get("check_files") or []
     if check_files:
+        if pack["id"] == "widescreen-fix":
+            asi = os.path.join(game_root, "System", "scripts", "SplinterCellChaosTheory.WidescreenFix.asi")
+            asi_dis = asi + ".disabled"
+            return os.path.isfile(asi) or os.path.isfile(asi_dis)
         return all(os.path.isfile(os.path.join(game_root, rel)) for rel in check_files)
     return os.path.isfile(_receipt_path(pack["id"]))
+
+
+def _pack_enabled(pack, game_root, prefs=None):
+    if pack.get("id") == "fps-cap-60":
+        if prefs:
+            return int(prefs.get("max_fps", 60) if prefs.get("max_fps") is not None else 60) != 0
+        return True
+    rec_path = _receipt_path(pack["id"])
+    if os.path.isfile(rec_path):
+        try:
+            with open(rec_path, "r", encoding="utf-8") as rf:
+                rec = json.load(rf)
+            if "enabled" in rec:
+                return bool(rec["enabled"])
+        except Exception:
+            pass
+    if pack.get("id") == "widescreen-fix" and game_root:
+        asi = os.path.join(game_root, "System", "scripts", "SplinterCellChaosTheory.WidescreenFix.asi")
+        asi_dis = asi + ".disabled"
+        if os.path.isfile(asi_dis) and not os.path.isfile(asi):
+            return False
+        return True
+    if pack.get("id") == "scda-coop-maps" and game_root:
+        rot_path = os.path.join(game_root, "System", "MapRotation.ini")
+        if os.path.isfile(rot_path):
+            try:
+                with open(rot_path, "r", encoding="latin1") as f:
+                    content = f.read()
+                if "MissionCoop[7]" not in content:
+                    return False
+            except Exception:
+                pass
+        return True
+    return True
 
 
 def _parse_dare_dir(data, dir_off, count):
@@ -1548,7 +1626,8 @@ def _apply_scda_audio_pack(game_real, installed_files, set_job):
 def _merge_map_rotation(game_real, scda_maps):
     rot_path = os.path.join(game_real, "System", "MapRotation.ini")
     if os.path.isfile(rot_path):
-        raw = open(rot_path, "r", encoding="latin1", errors="replace").read().splitlines()
+        with open(rot_path, "r", encoding="latin1", errors="replace") as f:
+            raw = f.read().splitlines()
     else:
         raw = ["[MAPS]"] + [f'MissionCoop[{i}]="{m}"' for i, m in enumerate(STOCK_COOP_ROTATION)]
 
@@ -1588,7 +1667,8 @@ def _strip_scda_from_map_rotation(game_real):
     rot_path = os.path.join(game_real, "System", "MapRotation.ini")
     if not os.path.isfile(rot_path):
         return
-    raw = open(rot_path, "r", encoding="latin1", errors="replace").read().splitlines()
+    with open(rot_path, "r", encoding="latin1", errors="replace") as f:
+        raw = f.read().splitlines()
     out_lines = []
     in_maps = False
     for line in raw:
@@ -1736,7 +1816,7 @@ def _install_pack_worker(pack, game_root, cloud_token=None):
                     set_job("extracting", ext_pct, f"Extracting {idx + 1}/{total_members} files...")
 
         with open(_receipt_path(pack_id), "w", encoding="utf-8") as rf:
-            json.dump({"id": pack_id, "version": pack.get("version", ""), "files": installed_files}, rf, indent=2)
+            json.dump({"id": pack_id, "version": pack.get("version", ""), "files": installed_files, "enabled": True}, rf, indent=2)
 
         _apply_scda_audio_pack(game_real, installed_files, set_job)
         pack_mf_path = os.path.join(game_real, "Data", "Maps", "scda_pack_manifest.json")
@@ -1747,7 +1827,7 @@ def _install_pack_worker(pack, game_root, cloud_token=None):
             _merge_map_rotation(game_real, scda_maps)
 
         with open(_receipt_path(pack_id), "w", encoding="utf-8") as rf:
-            json.dump({"id": pack_id, "version": pack.get("version", ""), "files": installed_files}, rf, indent=2)
+            json.dump({"id": pack_id, "version": pack.get("version", ""), "files": installed_files, "enabled": True}, rf, indent=2)
         set_job("done", 100, f"Installed {pack['name']}.")
     except Exception as exc:
         set_job("error", 0, "Install failed.", str(exc))
@@ -1770,8 +1850,16 @@ def content_catalog(sess):
         jobs = dict(_content_jobs)
     for p in _load_content_catalog():
         item = dict(p)
-        item["installed"] = _pack_installed(p, game_root)
-        item["job"] = jobs.get(p["id"])
+        if item.get("id") == "fps-cap-60":
+            item["installed"] = True
+            max_fps = int(prefs.get("max_fps", 60) if prefs.get("max_fps") is not None else 60)
+            item["enabled"] = (max_fps != 0)
+            item["value"] = max_fps
+            item["job"] = None
+        else:
+            item["installed"] = _pack_installed(p, game_root)
+            item["enabled"] = _pack_enabled(p, game_root, prefs) if item["installed"] else False
+            item["job"] = jobs.get(p["id"])
         packs.append(item)
     return jsonify({"ok": True, "game_linked": bool(game_root), "packs": packs})
 
@@ -1781,6 +1869,8 @@ def content_catalog(sess):
 def content_install(sess):
     data = request.get_json(silent=True) or {}
     pack_id = str(data.get("id") or "").strip()
+    if pack_id == "fps-cap-60":
+        return jsonify({"ok": False, "error": "60 FPS Cap is a built-in launch setting, not an installable package."}), 400
     prefs = get_or_create_prefs(sess["username_lower"])
     mod = inspect_and_install_mod(prefs["exe_path"], install=False)
     if not mod["exe_exists"] or not mod["game_dir"]:
@@ -1802,6 +1892,8 @@ def content_install(sess):
 def content_uninstall(sess):
     data = request.get_json(silent=True) or {}
     pack_id = str(data.get("id") or "").strip()
+    if pack_id == "fps-cap-60":
+        return jsonify({"ok": False, "error": "60 FPS Cap cannot be uninstalled."}), 400
     prefs = get_or_create_prefs(sess["username_lower"])
     mod = inspect_and_install_mod(prefs["exe_path"], install=False)
     game_root = mod["game_dir"]
@@ -1824,6 +1916,112 @@ def content_uninstall(sess):
         return jsonify({"ok": True})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/content/toggle", methods=["POST"])
+@require_auth
+def content_toggle(sess):
+    data = request.get_json(silent=True) or {}
+    pack_id = str(data.get("id") or "").strip()
+    enabled = bool(data.get("enabled", True))
+
+    with _proc_lock:
+        cur_job = _content_jobs.get(pack_id)
+        if cur_job and cur_job.get("status") in ("downloading", "extracting", "patching"):
+            return jsonify({"ok": False, "error": "Cannot change mod while an install job is running."}), 409
+
+    if pack_id == "fps-cap-60":
+        val = 60 if enabled else 0
+        with _db_lock:
+            conn = get_db()
+            try:
+                conn.execute(
+                    "UPDATE user_prefs SET max_fps=?, updated_at=? WHERE username_lower=?",
+                    (val, utc_now_iso(), sess["username_lower"]),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        publish("content", {"id": pack_id, "enabled": enabled, "value": val, "message": "Applies at next game launch."})
+        return jsonify({"ok": True, "id": pack_id, "enabled": enabled, "value": val, "note": "Applies at next game launch."})
+
+    if any_game_running():
+        return jsonify({"ok": False, "error": "Stop the game before changing mods."}), 409
+
+    prefs = get_or_create_prefs(sess["username_lower"])
+    mod = inspect_and_install_mod(prefs["exe_path"], install=False)
+    game_root = mod["game_dir"]
+    if not game_root or not os.path.isdir(game_root):
+        return jsonify({"ok": False, "error": "Link your Chaos Theory game folder in Settings first."}), 400
+
+    game_real = os.path.realpath(game_root)
+    pack = next((p for p in _load_content_catalog() if p.get("id") == pack_id), None)
+    if not pack:
+        return jsonify({"ok": False, "error": "Unknown content pack."}), 404
+
+    if not _pack_installed(pack, game_real):
+        return jsonify({"ok": False, "error": "Mod is not installed."}), 409
+
+    rec_path = _receipt_path(pack_id)
+    rec = {}
+    if os.path.isfile(rec_path):
+        try:
+            with open(rec_path, "r", encoding="utf-8") as rf:
+                rec = json.load(rf)
+        except Exception:
+            rec = {}
+    if not rec:
+        rec = {"id": pack_id, "version": pack.get("version", ""), "files": []}
+
+    if pack_id == "widescreen-fix":
+        scripts_dir = os.path.join(game_real, "System", "scripts")
+        asi = os.path.join(scripts_dir, "SplinterCellChaosTheory.WidescreenFix.asi")
+        asi_dis = asi + ".disabled"
+        if enabled:
+            if os.path.isfile(asi) and os.path.isfile(asi_dis):
+                app.logger.warning("Both .asi and .asi.disabled exist; keeping .asi")
+                try:
+                    os.remove(asi_dis)
+                except Exception:
+                    pass
+            elif os.path.isfile(asi_dis) and not os.path.isfile(asi):
+                os.rename(asi_dis, asi)
+            elif not os.path.isfile(asi) and not os.path.isfile(asi_dis):
+                return jsonify({"ok": False, "error": "Widescreen Fix files not found."}), 409
+        else:
+            if os.path.isfile(asi):
+                if os.path.isfile(asi_dis):
+                    try:
+                        os.remove(asi_dis)
+                    except Exception:
+                        pass
+                os.rename(asi, asi_dis)
+            elif not os.path.isfile(asi_dis):
+                return jsonify({"ok": False, "error": "Widescreen Fix files not found."}), 409
+
+    elif pack_id == "scda-coop-maps":
+        if enabled:
+            pack_mf_path = os.path.join(game_real, "Data", "Maps", "scda_pack_manifest.json")
+            scda_maps = SCDA_ORDERED_MAPS
+            if os.path.isfile(pack_mf_path):
+                try:
+                    with open(pack_mf_path, "r", encoding="utf-8") as pmf:
+                        scda_maps = json.load(pmf).get("maps") or SCDA_ORDERED_MAPS
+                except Exception:
+                    pass
+            _merge_map_rotation(game_real, scda_maps)
+        else:
+            _strip_scda_from_map_rotation(game_real)
+
+    rec["enabled"] = enabled
+    try:
+        with open(rec_path, "w", encoding="utf-8") as rf:
+            json.dump(rec, rf, indent=2)
+    except Exception as exc:
+        app.logger.error("Failed to write receipt: %s", exc)
+
+    publish("content", {"id": pack_id, "enabled": enabled, "status": "installed" if enabled else "disabled"})
+    return jsonify({"ok": True, "id": pack_id, "enabled": enabled})
 
 
 @app.route("/api/update/check", methods=["GET"])

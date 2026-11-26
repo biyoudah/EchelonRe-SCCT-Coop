@@ -273,6 +273,8 @@ void SaveBackBufferBmp(IDirect3DDevice9* dev, const wchar_t* path) {
     bb->Release();
 }
 
+static bool s_time_period_active = false;
+
 HRESULT STDMETHODCALLTYPE Hook_Present(IDirect3DDevice9* dev, const RECT* src, const RECT* dst, HWND hWnd,
                                        const RGNDATA* dirty) {
     if (g_shot_dir[0] != L'\0') {
@@ -318,6 +320,10 @@ HRESULT STDMETHODCALLTYPE Hook_Present(IDirect3DDevice9* dev, const RECT* src, c
             s_max_fps = (fn > 0 && fn < sizeof(fps_buf)) ? std::atoi(fps_buf) : 60;
             if (s_max_fps < 0) {
                 s_max_fps = 0;
+            }
+            if (s_max_fps > 0) {
+                timeBeginPeriod(1);
+                s_time_period_active = true;
             }
             QueryPerformanceFrequency(&s_freq);
             QueryPerformanceCounter(&s_next_frame);
@@ -369,7 +375,7 @@ HRESULT __stdcall Hook_CreateDevice(void* d3d, UINT adapter, UINT devType, HWND 
                         MH_EnableHook(vtbl[s.idx]);
                     }
                 }
-                if (g_shot_dir[0] != L'\0' && vtbl[17] != nullptr &&
+                if (vtbl[17] != nullptr &&
                     MH_CreateHook(vtbl[17], reinterpret_cast<void*>(&Hook_Present),
                                   reinterpret_cast<void**>(&g_Present)) == MH_OK) {
                     MH_EnableHook(vtbl[17]);
@@ -3250,6 +3256,10 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
         g_module = instance;
         DisableThreadLibraryCalls(instance);
     } else if (reason == DLL_PROCESS_DETACH) {
+        if (s_time_period_active) {
+            timeEndPeriod(1);
+            s_time_period_active = false;
+        }
         TransportShutdown();
     }
     return TRUE;

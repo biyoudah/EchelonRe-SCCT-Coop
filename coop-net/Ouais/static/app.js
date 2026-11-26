@@ -298,11 +298,14 @@ function connectEvents() {
   });
   es.addEventListener("content", (e) => {
     const job = JSON.parse(e.data);
-    const p = S.packs.find((x) => x.id === job.id);
+    const p = (S.packs || []).find((x) => x.id === job.id);
     if (p) {
+      if ("enabled" in job) {
+        p.enabled = Boolean(job.enabled);
+      }
       p.job = job;
-      if (job.status === "done") { p.installed = true; p.lastError = ""; }
-      if (job.status === "uninstalled") { p.installed = false; p.lastError = ""; }
+      if (job.status === "done") { p.installed = true; p.enabled = true; p.lastError = ""; }
+      if (job.status === "uninstalled") { p.installed = false; p.enabled = false; p.lastError = ""; }
       if (job.status === "error") { p.lastError = job.error || "Install failed."; }
       updatePackCard(p);
     }
@@ -442,38 +445,77 @@ function buildPackCard(p) {
   const j = p.job || {};
   const busyJob = j.status === "downloading" || j.status === "extracting" || j.status === "patching";
   const isErr = j.status === "error" || Boolean(p.lastError);
+  const isBuiltin = p.id === "fps-cap-60" || p.type === "builtin";
+
   let badgeCls = "pack-badge";
   let badgeText = "Not installed";
   if (busyJob) {
     badgeText = j.message || "Installing...";
   } else if (p.installed) {
-    badgeCls += " ok";
-    badgeText = "Installed";
+    if (p.enabled) {
+      badgeCls += " ok";
+      badgeText = isBuiltin ? "Active" : "Installed";
+    } else {
+      badgeCls += " disabled";
+      badgeText = "Disabled";
+    }
   } else if (isErr) {
     badgeCls += " err";
     badgeText = "Failed";
   }
 
   const badge = h("span", { id: `pack-badge-${p.id}`, class: badgeCls, text: badgeText });
-  const acts = h("div", { id: `pack-acts-${p.id}`, class: "row" });
-  acts.append(h("button", {
-    id: `pack-btn-${p.id}`,
-    class: "btn sm " + (p.installed ? "" : "primary"),
-    disabled: busyJob,
-    text: busyJob ? `${j.progress || 0}%` : (p.installed ? "Reinstall" : "Install"),
-    onclick: () => installPack(p.id),
-  }));
-  if (p.installed && !busyJob) {
-    acts.append(h("button", { class: "btn sm ghost", text: "Remove", onclick: () => uninstallPack(p.id) }));
+  const badges = h("div", { class: "pack-badges" });
+  if (p.experimental) {
+    badges.append(h("span", { class: "pack-badge warn", text: "Experimental" }));
   }
+  badges.append(badge);
+
+  const acts = h("div", { id: `pack-acts-${p.id}`, class: "pack-actions-row" });
+  const leftActs = h("div", { class: "row" });
+  const rightActs = h("div", { class: "row" });
+
+  if (p.installed || isBuiltin) {
+    const toggleBtn = h("button", {
+      id: `pack-toggle-${p.id}`,
+      class: "switch",
+      role: "switch",
+      "aria-checked": String(Boolean(p.enabled)),
+      "aria-label": `Enable ${p.name}`,
+      disabled: busyJob,
+      onclick: () => togglePack(p.id, !p.enabled),
+    });
+    leftActs.append(h("label", { class: "pack-toggle-row" },
+      toggleBtn,
+      h("span", { id: `pack-toggle-lbl-${p.id}`, class: "pack-toggle-lbl", text: p.enabled ? "Active" : "Disabled" })
+    ));
+  }
+
+  if (!isBuiltin) {
+    rightActs.append(h("button", {
+      id: `pack-btn-${p.id}`,
+      class: "btn sm " + (p.installed ? "" : "primary"),
+      disabled: busyJob,
+      text: busyJob ? `${j.progress || 0}%` : (p.installed ? "Reinstall" : "Install"),
+      onclick: () => installPack(p.id),
+    }));
+    if (p.installed && !busyJob) {
+      rightActs.append(h("button", { class: "btn sm ghost", text: "Remove", onclick: () => uninstallPack(p.id) }));
+    }
+  }
+
+  acts.append(leftActs, rightActs);
 
   const errEl = (isErr && (p.lastError || j.error)) ? h("div", { id: `pack-err-${p.id}`, class: "pack-err", text: p.lastError || j.error }) : null;
   const progEl = busyJob ? h("progress", { id: `pack-prog-${p.id}`, class: "prog", max: "100", value: String(j.progress || 0) }) : null;
+  const metaText = isBuiltin ? "Built into ScctCoopNet.dll" : `v${p.version} · ~${p.size_mb} MB`;
+  const noteEl = isBuiltin ? h("div", { class: "pack-note", text: "Applies at next game launch. Keep both co-op players on the same setting." }) : null;
 
   return h("div", { id: `pack-${p.id}`, class: "card pack", dataset: { packId: p.id } },
-    h("div", { class: "pack-head" }, h("h3", { text: p.name }), badge),
-    h("div", { class: "pack-meta", text: `v${p.version} · ~${p.size_mb} MB` }),
+    h("div", { class: "pack-head" }, h("h3", { text: p.name }), badges),
+    h("div", { class: "pack-meta", text: metaText }),
     h("p", { class: "pack-desc", text: p.description }),
+    noteEl,
     p.credits ? h("div", { class: "pack-credits", text: p.credits }) : null,
     progEl,
     errEl,
@@ -485,6 +527,7 @@ function updatePackCard(p) {
   if (!card) return renderContent();
   const j = p.job || {};
   const busyJob = j.status === "downloading" || j.status === "extracting" || j.status === "patching";
+  const isBuiltin = p.id === "fps-cap-60" || p.type === "builtin";
   if (j.status === "done" || j.status === "uninstalled") {
     const fresh = buildPackCard(p);
     card.replaceWith(fresh);
@@ -497,12 +540,30 @@ function updatePackCard(p) {
       badge.className = "pack-badge";
       badge.textContent = j.message || "Installing...";
     } else if (p.installed) {
-      badge.className = "pack-badge ok";
-      badge.textContent = "Installed";
+      if (p.enabled) {
+        badge.className = "pack-badge ok";
+        badge.textContent = isBuiltin ? "Active" : "Installed";
+      } else {
+        badge.className = "pack-badge disabled";
+        badge.textContent = "Disabled";
+      }
     } else if (j.status === "error" || p.lastError) {
       badge.className = "pack-badge err";
       badge.textContent = "Failed";
+    } else {
+      badge.className = "pack-badge";
+      badge.textContent = "Not installed";
     }
+  }
+
+  const toggle = $(`pack-toggle-${p.id}`);
+  if (toggle) {
+    toggle.setAttribute("aria-checked", String(Boolean(p.enabled)));
+    toggle.disabled = busyJob;
+  }
+  const toggleLbl = $(`pack-toggle-lbl-${p.id}`);
+  if (toggleLbl) {
+    toggleLbl.textContent = p.enabled ? "Active" : "Disabled";
   }
 
   const btn = $(`pack-btn-${p.id}`);
@@ -537,6 +598,29 @@ function updatePackCard(p) {
   } else if (err && !errMsg) {
     err.remove();
   }
+}
+
+async function togglePack(id, newEnabled) {
+  const p = (S.packs || []).find((x) => x.id === id);
+  if (!p) return;
+  const oldEnabled = Boolean(p.enabled);
+  p.enabled = newEnabled;
+  updatePackCard(p);
+
+  const { status, data } = await api("/api/content/toggle", "POST", { id, enabled: newEnabled });
+  if (!data || !data.ok) {
+    p.enabled = oldEnabled;
+    updatePackCard(p);
+    const msg = data && data.error ? data.error : "Could not toggle mod.";
+    toast(msg, true);
+    return;
+  }
+  if (data.note) {
+    toast(data.note);
+  } else {
+    toast(`${p.name} ${newEnabled ? "activated" : "deactivated"}.`);
+  }
+  loadContent();
 }
 
 async function installPack(id) {

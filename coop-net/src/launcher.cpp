@@ -663,7 +663,18 @@ int wmain(int argc, wchar_t** argv) {
     bool hold = false;
     std::wstring exe;
     for (int i = 1; i < argc; ++i) {
-        if (std::wcscmp(argv[i], L"--suspendu") == 0) {
+        if (std::wcscmp(argv[i], L"--max-fps") == 0 && i + 1 < argc) {
+            const wchar_t* raw = argv[++i];
+            wchar_t* end = nullptr;
+            long fps = std::wcstol(raw, &end, 10);
+            if (end != raw && *end == L'\0') {
+                if (fps < 0) fps = 0;
+                else if (fps > 240) fps = 240;
+                wchar_t buf[16]{};
+                _snwprintf_s(buf, _TRUNCATE, L"%ld", fps);
+                SetEnvironmentVariableW(L"SCCT_MAX_FPS", buf);
+            }
+        } else if (std::wcscmp(argv[i], L"--suspendu") == 0) {
             hold = true;
         } else if (std::wcscmp(argv[i], L"--visible") == 0) {
             g_visible = true;
