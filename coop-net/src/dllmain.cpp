@@ -275,6 +275,8 @@ void SaveBackBufferBmp(IDirect3DDevice9* dev, const wchar_t* path) {
     bb->Release();
 }
 
+void Logf(const char* fmt, ...);
+
 static bool s_time_period_active = false;
 
 HRESULT STDMETHODCALLTYPE Hook_Present(IDirect3DDevice9* dev, const RECT* src, const RECT* dst, HWND hWnd,
@@ -329,6 +331,9 @@ HRESULT STDMETHODCALLTYPE Hook_Present(IDirect3DDevice9* dev, const RECT* src, c
             }
             QueryPerformanceFrequency(&s_freq);
             QueryPerformanceCounter(&s_next_frame);
+            const int ws_present = GetModuleHandleW(L"SplinterCellChaosTheory.WidescreenFix.asi") != nullptr ? 1 : 0;
+            Logf("heure=0 pid=%lu dir=etat local=- pair=- len=0 hex= seq=0 tronque=0 note=fps_cap_init max_fps=%d widescreen_present=%d",
+                 GetCurrentProcessId(), s_max_fps, ws_present);
         }
         if (s_max_fps > 0 && s_freq.QuadPart > 0) {
             const LONGLONG frame_ticks = s_freq.QuadPart / s_max_fps;
@@ -404,7 +409,19 @@ void* WINAPI Hook_Direct3DCreate9(UINT sdkVersion) {
             return d3dex;
         }
     }
-    return g_Direct3DCreate9 ? g_Direct3DCreate9(sdkVersion) : nullptr;
+    void* d3d = g_Direct3DCreate9 ? g_Direct3DCreate9(sdkVersion) : nullptr;
+    if (d3d != nullptr) {
+        static LONG create_dev_hooked = 0;
+        if (InterlockedCompareExchange(&create_dev_hooked, 1, 0) == 0) {
+            void** vtbl = *reinterpret_cast<void***>(d3d);
+            if (vtbl != nullptr && vtbl[16] != nullptr &&
+                MH_CreateHook(vtbl[16], reinterpret_cast<void*>(&Hook_CreateDevice),
+                              reinterpret_cast<void**>(&g_CreateDevice)) == MH_OK) {
+                MH_EnableHook(vtbl[16]);
+            }
+        }
+    }
+    return d3d;
 }
 
 bool AllowMultiInstance() {

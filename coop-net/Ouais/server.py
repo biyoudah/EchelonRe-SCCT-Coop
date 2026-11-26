@@ -68,6 +68,7 @@ CLOUD_API_URL = os.environ.get(
 KNOWN_EXES = {
     "9a65e326df1b273ce24eae904beabfb2": ("Retail v1.05", 9867264),
     "33c0951a4a80f2a97daf3e302c534232": ("Ubisoft v1.05", 9877160),
+    "bdb03019c08a0e1ca82fbbd7fc932a0c": ("Ubisoft v1.05", 9877160),
 }
 COMMON_EXE_CANDIDATES = [
     r"D:\Jeux\Tom Clancys Splinter Cell Chaos Theory\System\splintercell3.exe",
@@ -79,7 +80,7 @@ COMMON_EXE_CANDIDATES = [
 ROOM_CODE_RE = re.compile(r"^SCCT-[A-Z0-9]{6}$")
 SESSION_TTL_DAYS = 7
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.2.2"
 UPDATE_FEED_URL = os.environ.get(
     "SCCT_UPDATE_URL",
     "https://github.com/biyoudah/EchelonRe-SCCT-Coop/releases/latest/download",
@@ -468,8 +469,9 @@ def inspect_and_install_mod(exe_path, install=True):
     game_dir = os.path.dirname(clean_exe)
     src_dll = os.path.join(BUILD_RELEASE_DIR, "ScctCoopNet.dll")
     dst_dll = os.path.join(game_dir, "ScctCoopNet.dll")
-    src_proxy = os.path.join(BUILD_RELEASE_DIR, "AVIFIL32.dll")
-    dst_proxy = os.path.join(game_dir, "AVIFIL32.dll")
+    src_proxy = os.path.join(BUILD_RELEASE_DIR, "DDRAW.dll")
+    dst_proxy = os.path.join(game_dir, "DDRAW.dll")
+    old_avi = os.path.join(game_dir, "AVIFIL32.dll")
     src_launch = os.path.join(BUILD_RELEASE_DIR, "scct-coop-launch.exe")
     dst_launch = os.path.join(game_dir, "scct-coop-launch.exe")
     src_ini = next((os.path.join(d, "scct-coop-net.ini") for d in INI_SOURCE_DIRS if os.path.isfile(os.path.join(d, "scct-coop-net.ini"))), "")
@@ -477,6 +479,8 @@ def inspect_and_install_mod(exe_path, install=True):
 
     if install:
         try:
+            if os.path.isfile(old_avi) and os.path.getsize(old_avi) < 200000:
+                os.remove(old_avi)
             if os.path.isfile(src_dll):
                 need_dll = (not os.path.isfile(dst_dll)) or (file_sha256(src_dll) != file_sha256(dst_dll))
                 if need_dll:
@@ -486,7 +490,7 @@ def inspect_and_install_mod(exe_path, install=True):
                 need_proxy = (not os.path.isfile(dst_proxy)) or (file_sha256(src_proxy) != file_sha256(dst_proxy))
                 if need_proxy:
                     shutil.copy2(src_proxy, dst_proxy)
-                    info["installed_now"].append("AVIFIL32.dll")
+                    info["installed_now"].append("DDRAW.dll")
             if os.path.isfile(src_launch):
                 need_launch = (not os.path.isfile(dst_launch)) or (file_sha256(src_launch) != file_sha256(dst_launch))
                 if need_launch:

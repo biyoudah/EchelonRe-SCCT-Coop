@@ -169,13 +169,13 @@ set_target_properties(scct_p2p PROPERTIES
     SUFFIX ".dll"
 )
 
-add_library(AVIFIL32 SHARED
-    src/avifil32_proxy.cpp
-    AVIFIL32.def
+add_library(DDRAW SHARED
+    src/ddraw_proxy.cpp
+    DDRAW.def
 )
-set_target_properties(AVIFIL32 PROPERTIES
+set_target_properties(DDRAW PROPERTIES
     PREFIX ""
-    OUTPUT_NAME "AVIFIL32"
+    OUTPUT_NAME "DDRAW"
     SUFFIX ".dll"
 )
 
