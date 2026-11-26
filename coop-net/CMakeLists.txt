@@ -24,11 +24,38 @@ set(OPUS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/opus)
 set(RNNOISE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/rnnoise)
 set(MINIAUDIO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniaudio)
 
+include(FetchContent)
+if(POLICY CMP0169)
+    cmake_policy(SET CMP0169 OLD)
+endif()
+
+if(NOT EXISTS "${JUICE_DIR}/CMakeLists.txt")
+    message(STATUS "Fetching libjuice via FetchContent...")
+    FetchContent_Declare(
+        libjuice
+        GIT_REPOSITORY https://github.com/paullouisageneau/libjuice.git
+        GIT_TAG v1.5.0
+    )
+    FetchContent_Populate(libjuice)
+    set(JUICE_DIR ${libjuice_SOURCE_DIR})
+endif()
+
 # Build libjuice static library (MPL-2.0) for P2P ICE/STUN/TURN
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(NO_TESTS ON CACHE BOOL "" FORCE)
 set(NO_SERVER ON CACHE BOOL "" FORCE)
 add_subdirectory(${JUICE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/libjuice EXCLUDE_FROM_ALL)
+
+if(NOT EXISTS "${OPUS_DIR}/CMakeLists.txt")
+    message(STATUS "Fetching opus via FetchContent...")
+    FetchContent_Declare(
+        opus
+        GIT_REPOSITORY https://github.com/xiph/opus.git
+        GIT_TAG v1.5.2
+    )
+    FetchContent_Populate(opus)
+    set(OPUS_DIR ${opus_SOURCE_DIR})
+endif()
 
 # Build Opus static library (BSD-3-Clause)
 set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
@@ -37,6 +64,41 @@ set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
 set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
 set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
 add_subdirectory(${OPUS_DIR} ${CMAKE_CURRENT_BINARY_DIR}/opus EXCLUDE_FROM_ALL)
+
+if(NOT EXISTS "${RNNOISE_DIR}/src/denoise.c")
+    message(STATUS "Fetching rnnoise via FetchContent...")
+    FetchContent_Declare(
+        rnnoise
+        GIT_REPOSITORY https://github.com/xiph/rnnoise.git
+        GIT_TAG 70f1d256acd4b34a572f999a05c87bf00b67730d
+    )
+    FetchContent_Populate(rnnoise)
+    set(RNNOISE_DIR ${rnnoise_SOURCE_DIR})
+endif()
+
+if(NOT EXISTS "${RNNOISE_DIR}/src/rnnoise_data.c")
+    message(STATUS "Downloading pre-trained rnnoise model...")
+    file(DOWNLOAD
+        "https://media.xiph.org/rnnoise/models/rnnoise_data-0a8755f8e2d834eff6a54714ecc7d75f9932e845df35f8b59bc52a7cfe6e8b37.tar.gz"
+        "${RNNOISE_DIR}/rnnoise_data.tar.gz"
+        EXPECTED_HASH SHA256=0a8755f8e2d834eff6a54714ecc7d75f9932e845df35f8b59bc52a7cfe6e8b37
+    )
+    execute_process(
+        COMMAND ${CMAKE_COMMAND} -E tar xzf "${RNNOISE_DIR}/rnnoise_data.tar.gz"
+        WORKING_DIRECTORY "${RNNOISE_DIR}"
+    )
+endif()
+
+if(NOT EXISTS "${MINIAUDIO_DIR}/miniaudio.h")
+    message(STATUS "Fetching miniaudio via FetchContent...")
+    FetchContent_Declare(
+        miniaudio
+        GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+        GIT_TAG 877ea4a7c2601c7b0f2a44e83dfac42e6470fea6
+    )
+    FetchContent_Populate(miniaudio)
+    set(MINIAUDIO_DIR ${miniaudio_SOURCE_DIR})
+endif()
 
 # Build RNNoise static library (BSD-3-Clause)
 add_library(scct_rnnoise STATIC

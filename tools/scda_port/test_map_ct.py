@@ -110,5 +110,13 @@ def main():
     sys.exit(res.returncode)
 
 
+def test_live_map_probe():
+    try:
+        import pytest
+        pytest.skip("Live CT test requires Windows MSVC and splintercell3.exe")
+    except ImportError:
+        pass
+
+
 if __name__ == "__main__":
     main()

@@ -1,0 +1,12 @@
+[submodule "coop-net/third_party/libjuice"]
+	path = coop-net/third_party/libjuice
+	url = https://github.com/paullouisageneau/libjuice.git
+[submodule "coop-net/third_party/opus"]
+	path = coop-net/third_party/opus
+	url = https://github.com/xiph/opus.git
+[submodule "coop-net/third_party/rnnoise"]
+	path = coop-net/third_party/rnnoise
+	url = https://github.com/xiph/rnnoise.git
+[submodule "coop-net/third_party/miniaudio"]
+	path = coop-net/third_party/miniaudio
+	url = https://github.com/mackron/miniaudio.git

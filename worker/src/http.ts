@@ -51,8 +51,38 @@ export function handleLobby(request: Request, deps: LobbyDeps): Promise<Response
 
 export async function handleEdge(request: Request, deps: EdgeDeps): Promise<Response> {
   const url = new URL(request.url);
-  if (url.pathname === "/v1/health" && request.method === "GET") return health(deps.emulatorEnabled);
-  return problem(404, "not_found", "route");
+  if (request.method === "OPTIONS") return empty(204);
+  if (url.pathname === "/v1/health") return health(deps.emulatorEnabled);
+  if (url.pathname === "/v1/accounts" && request.method === "POST") return createAccount(request, deps);
+  if (url.pathname === "/v1/accounts/login" && request.method === "POST") return loginAccount(request, deps);
+  if (url.pathname === "/v1/accounts" && request.method === "DELETE") return deleteAccount(request, deps);
+  if (url.pathname.startsWith("/v1/accounts")) return problem(405, "method_not_allowed", "method");
+  if (!url.pathname.startsWith("/v1/lobbies")) return problem(404, "not_found", "route");
+
+  if (url.pathname === "/v1/lobbies" && request.method === "POST") {
+    const account = await accountFrom(request, deps.accounts);
+    if (!account || account === "invalid") return problem(401, "unauthorized", "account token");
+    const created = await lobbyCreateRequest(request, account.username);
+    if (created instanceof Response) return created;
+    const response = await deps.forwardLobby(withClientKey(created, deps.clientKey, account));
+    if (response.status === 201) {
+      try {
+        await deps.accounts.incrementHosted(account.id, new Date(deps.now()).toISOString());
+      } catch {
+        // The lobby exists. A stats write must not hide the host token.
+      }
+    }
+    return response;
+  }
+
+  const heartbeat = /^\/v1\/lobbies\/([0-9a-f]{16})\/heartbeat$/.exec(url.pathname);
+  if (heartbeat && request.method === "POST") {
+    const account = await accountFrom(request, deps.accounts);
+    if (!account || account === "invalid") return problem(401, "unauthorized", "account token");
+    return deps.forwardLobby(withClientKey(request, deps.clientKey, account));
+  }
+
+  return relayLobby(request, deps);
 }
 
 async function relayLobby(request: Request, deps: EdgeDeps): Promise<Response> {

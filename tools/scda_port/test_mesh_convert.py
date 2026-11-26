@@ -58,5 +58,19 @@ def main():
     return 1 if errs else 0
 
 
+def test_mesh_conversion():
+    repo = os.path.abspath(os.path.join(HERE, "..", ".."))
+    umd = os.path.join(repo, "System", "dynamic-pc.umd")
+    root = os.path.join(HERE, "..", "..", "SCDA_Coop_Maps", "reconstructed")
+    if not os.path.isfile(umd) or not os.path.isdir(root):
+        try:
+            import pytest
+            pytest.skip("Retail dynamic-pc.umd or reconstructed SCDA assets not present in repository")
+        except ImportError:
+            return
+    res = main()
+    assert res == 0
+
+
 if __name__ == "__main__":
     sys.exit(main())
