@@ -79,7 +79,7 @@ COMMON_EXE_CANDIDATES = [
 ROOM_CODE_RE = re.compile(r"^SCCT-[A-Z0-9]{6}$")
 SESSION_TTL_DAYS = 7
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.2.1"
 UPDATE_FEED_URL = os.environ.get(
     "SCCT_UPDATE_URL",
     "https://github.com/biyoudah/EchelonRe-SCCT-Coop/releases/latest/download",

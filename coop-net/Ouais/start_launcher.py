@@ -117,11 +117,32 @@ def run_native(url):
     webview.start(debug=False)
 
 
+def auto_update_on_startup():
+    """Check Velopack feed on launch; if a newer release exists, download, apply, and restart."""
+    if os.environ.get("SCCT_SKIP_AUTO_UPDATE") == "1":
+        return
+    try:
+        import velopack
+
+        mgr = velopack.UpdateManager(server.UPDATE_FEED_URL)
+        if not mgr.is_installed():
+            return
+        info = mgr.check_for_updates()
+        if info is not None and getattr(info, "TargetFullRelease", None) is not None:
+            mgr.download_updates(info)
+            mgr.apply_updates_and_restart(info)
+    except Exception:
+        # Never block launcher startup if offline, rate-limited, or dev/portable build.
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser(description="SCCT Echelon Co-op Launcher")
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--browser", action="store_true", help="Open in the default browser instead of a native window.")
     args = parser.parse_args()
+
+    auto_update_on_startup()
 
     _mutex = ensure_single_instance()  # noqa: F841 (keep alive)
     preferred = args.port if args.port is not None else int(os.environ.get("SCCT_LAUNCHER_PORT") or 27180)
