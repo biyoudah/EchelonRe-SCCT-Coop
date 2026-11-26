@@ -29,7 +29,7 @@
     {
       "binding": "DB",
       "database_name": "scct-echelonre",
-      "database_id": "a7f8a187-7bd3-49fb-b431-8de8c34cb56a",
+      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
       "migrations_dir": "migrations"
     }
   ]

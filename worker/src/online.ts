@@ -6,10 +6,8 @@ const JSON_HEADERS: Record<string, string> = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store",
   "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
   "referrer-policy": "no-referrer",
-  "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
-  "access-control-allow-headers": "authorization, content-type, x-account-token",
 };
 
 const USERNAME_RE = /^[A-Za-z0-9_-]{3,19}$/;
@@ -224,10 +222,13 @@ async function sendVerificationEmail(
   username: string,
   email: string,
   code: string,
-): Promise<{ ok: true; delivery: "brevo" | "resend" | "dev_fallback"; devCode?: string } | { ok: false; error: string }> {
+): Promise<{ ok: true } | { ok: false; error: string }> {
   const brevoKey = (env.BREVO_API_KEY ?? "").trim();
   const resendKey = (env.RESEND_API_KEY ?? "").trim();
-  const rawFrom = (env.EMAIL_FROM ?? "SCCT Co-op <onboarding@resend.dev>").trim();
+  const rawFrom = (env.EMAIL_FROM ?? "").trim();
+  if ((!brevoKey && !resendKey) || !rawFrom) {
+    return { ok: false, error: "Email delivery is not configured." };
+  }
   const subject = "SCCT Co-op Verification Code";
   const textBody = `Agent ${username},\n\nYour Echelon:Re verification code is: ${code}\n\nThis code expires in 15 minutes.`;
   const htmlBody = `<div style="font-family:sans-serif;background:#090b0d;color:#eef2f5;padding:24px;border-radius:6px">`
@@ -239,29 +240,33 @@ async function sendVerificationEmail(
 
   if (brevoKey) {
     const sender = parseFromHeader(rawFrom);
-    const resp = await fetch("https://api.brevo.com/v3/smtp/email", {
-      method: "POST",
-      headers: {
-        "api-key": brevoKey,
-        "content-type": "application/json",
-        accept: "application/json",
-      },
-      body: JSON.stringify({
-        sender,
-        to: [{ email, name: username }],
-        subject,
-        textContent: textBody,
-        htmlContent: htmlBody,
-      }),
-    });
-    if (!resp.ok) {
-      const detail = await resp.text().catch(() => "");
-      return { ok: false, error: `Brevo email provider returned ${resp.status}: ${detail.slice(0, 120)}` };
+    try {
+      const resp = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          "api-key": brevoKey,
+          "content-type": "application/json",
+          accept: "application/json",
+        },
+        body: JSON.stringify({
+          sender,
+          to: [{ email, name: username }],
+          subject,
+          textContent: textBody,
+          htmlContent: htmlBody,
+        }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!resp.ok) {
+        return { ok: false, error: "Verification email could not be sent. Please try again later." };
+      }
+      return { ok: true };
+    } catch {
+      return { ok: false, error: "Verification email could not be sent. Please try again later." };
     }
-    return { ok: true, delivery: "brevo" };
   }
 
-  if (resendKey) {
+  try {
     const resp = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
@@ -275,18 +280,15 @@ async function sendVerificationEmail(
         text: textBody,
         html: htmlBody,
       }),
+      signal: AbortSignal.timeout(10_000),
     });
     if (!resp.ok) {
-      const detail = await resp.text().catch(() => "");
-      return { ok: false, error: `Email provider returned ${resp.status}: ${detail.slice(0, 120)}` };
+      return { ok: false, error: "Verification email could not be sent. Please try again later." };
     }
-    return { ok: true, delivery: "resend" };
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Verification email could not be sent. Please try again later." };
   }
-
-  if ((env.ALLOW_DEV_EMAIL_FALLBACK ?? "").trim() === "1") {
-    return { ok: true, delivery: "dev_fallback", devCode: code };
-  }
-  return { ok: false, error: "Email delivery is not configured on the server." };
 }
 
 async function issueVerificationCode(
@@ -295,7 +297,7 @@ async function issueVerificationCode(
   username: string,
   email: string,
   nowMs: number,
-): Promise<{ ok: true; delivery: "brevo" | "resend" | "dev_fallback"; devCode?: string } | { ok: false; error: string }> {
+): Promise<{ ok: true } | { ok: false; error: string }> {
   const code = generateSixDigitCode();
   const codeSalt = randomHex(16);
   const codeHash = await sha256Hex(`${codeSalt}:${code}`);
@@ -314,9 +316,7 @@ async function issueVerificationCode(
 }
 
 async function authenticateBearer(request: Request, db: D1Database, nowMs: number): Promise<OnlineAccountRow | null> {
-  const url = new URL(request.url);
-  const rawToken =
-    bearer(request) ?? request.headers.get("x-account-token")?.trim() ?? url.searchParams.get("token")?.trim() ?? null;
+  const rawToken = bearer(request) ?? request.headers.get("x-account-token")?.trim() ?? null;
   if (!rawToken || rawToken.length < 32) return null;
   const tokenHash = await sha256Hex(rawToken);
   const row = await db
@@ -376,9 +376,11 @@ export async function handleOnlineV2(
     const account = await authenticateBearer(request, env.DB, nowMs);
     if (!account) return jsonRes(401, { ok: false, error: "Authentication required." });
     const token = (env.CONTENT_GITHUB_TOKEN ?? "").trim();
-    if (!token) return jsonRes(503, { ok: false, error: "Content delivery is not configured." });
-    const repo = (env.CONTENT_GITHUB_REPO ?? "biyoudah/Splinter-Cell-Chaos-Theory-Echelon-Re-Online-Coop").trim();
-    const assetId = (env.CONTENT_SCDA_ASSET_ID ?? "797182419").trim();
+    const repo = (env.CONTENT_GITHUB_REPO ?? "").trim();
+    const assetId = (env.CONTENT_SCDA_ASSET_ID ?? "").trim();
+    if (!token || !repo || !assetId) {
+      return jsonRes(503, { ok: false, error: "Content delivery is not configured." });
+    }
     const assetUrl = `https://api.github.com/repos/${repo}/releases/assets/${assetId}`;
     const ghRes = await fetch(assetUrl, {
       method: "GET",
@@ -388,10 +390,11 @@ export async function handleOnlineV2(
         "User-Agent": "SCCT-Coop-Worker/1.0",
       },
       redirect: "manual",
+      signal: AbortSignal.timeout(15_000),
     });
     const signedUrl = ghRes.headers.get("location");
     if (!signedUrl) {
-      return jsonRes(502, { ok: false, error: `Upstream content error (${ghRes.status}).` });
+      return jsonRes(502, { ok: false, error: "Content download is temporarily unavailable." });
     }
     return new Response(null, {
       status: 302,
@@ -548,8 +551,6 @@ async function registerV2(request: Request, env: Env, clientKey: string, nowMs: 
     needs_verification: true,
     username,
     email: maskEmail(email),
-    delivery: mailRes.delivery,
-    ...(mailRes.devCode ? { dev_code: mailRes.devCode } : {}),
   });
 }
 
@@ -642,8 +643,13 @@ async function resendCodeV2(request: Request, env: Env, clientKey: string, nowMs
   )
     .bind(ident, ident)
     .first<OnlineAccountRow>();
-  if (!user || !user.email) return jsonRes(404, { ok: false, error: "Account not found." });
-  if (user.email_verified === 1) return jsonRes(400, { ok: false, error: "Email is already verified." });
+  if (!user || !user.email || user.email_verified === 1) {
+    await recordAuthFailure(env.DB, [ipKey], nowMs);
+    return jsonRes(200, {
+      ok: true,
+      message: "If an unverified account matches, a verification code has been sent.",
+    });
+  }
 
   const lastRow = await env.DB.prepare(
     "SELECT created_at FROM email_verifications WHERE account_id = ? ORDER BY id DESC LIMIT 1",
@@ -663,8 +669,7 @@ async function resendCodeV2(request: Request, env: Env, clientKey: string, nowMs
   return jsonRes(200, {
     ok: true,
     email: maskEmail(user.email),
-    delivery: mailRes.delivery,
-    ...(mailRes.devCode ? { dev_code: mailRes.devCode } : {}),
+    message: "If an unverified account matches, a verification code has been sent.",
   });
 }
 

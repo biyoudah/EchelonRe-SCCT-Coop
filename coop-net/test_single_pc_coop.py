@@ -4,6 +4,7 @@ import glob
 import os
 import re
 import subprocess
+import tempfile
 import time
 from PIL import Image, ImageGrab
 
@@ -17,7 +18,7 @@ HOST_LOG_NAME = "scct-coop-net-host.log"
 GUEST_LOG_NAME = "scct-coop-net-guest.log"
 HOST_LOG = os.path.join(GAME_DIR, HOST_LOG_NAME)
 GUEST_LOG = os.path.join(GAME_DIR, GUEST_LOG_NAME)
-ARTIFACT_DIR = r"C:\Users\Ayoub\.gemini\antigravity\brain\a69a4742-dc3f-4f88-b89f-332ef57f63c9"
+ARTIFACT_DIR = os.environ.get("SCCT_TEST_ARTIFACT_DIR", os.path.join(tempfile.gettempdir(), "scct_coop_test"))
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32

@@ -8,7 +8,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
-SCRATCH = r"C:\Users\Ayoub\.gemini\antigravity\brain\4a737850-5801-4f3a-b192-9ebebd926525\scratch"
+SCRATCH = os.environ.get("SCCT_PROBE_DIR", os.path.join(HERE, "probe_bin"))
 VCVARS32 = r"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars32.bat"
 
 

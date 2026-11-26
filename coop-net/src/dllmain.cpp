@@ -1323,6 +1323,7 @@ using QuazalUnregisterListenerFn = void(__cdecl*)(void*);
 using QuazalGetBrowseResultsFn = int(__cdecl*)(SessionPlayerArray*);
 using QuazalGetSessionDescFn = int(__cdecl*)(void*);
 using QuazalInitFn = int(__cdecl*)(void*, int);
+using IsOnlineSessionFn = int(__cdecl*)();
 using QuazalPollFn = int(__cdecl*)();
 using LoginOnShowFn = char(__thiscall*)(uint8_t*, void*);
 using LobbyOnlineTickFn = char(__thiscall*)(uint8_t*, void*, float);
@@ -1350,6 +1351,7 @@ QuazalCreateSessionFn g_orig_QuazalCreateSession = nullptr;
 QuazalJoinSessionFn g_orig_QuazalJoinSession = nullptr;
 QuazalStartBrowseFn g_orig_QuazalStartBrowse = nullptr;
 QuazalInitFn g_orig_QuazalInit = nullptr;
+IsOnlineSessionFn g_orig_IsOnlineSession = nullptr;
 LoginOnShowFn g_orig_LoginOnShow = nullptr;
 LobbyOnlineTickFn g_orig_LobbyOnlineTick = nullptr;
 RoomOnlineTickFn g_orig_RoomOnlineTick = nullptr;
@@ -1671,6 +1673,13 @@ int __cdecl Hook_QuazalInit(void* engine, int is_online) {
     const int ret = g_orig_QuazalInit(engine, 0);
     *reinterpret_cast<uint32_t*>(0x111F55DC) = 0;
     return ret;
+}
+
+int __cdecl Hook_IsOnlineSession() {
+    if (g_online_logged_in) {
+        return 1;
+    }
+    return g_orig_IsOnlineSession ? g_orig_IsOnlineSession() : 0;
 }
 
 int __cdecl Hook_QuazalCreateSession(void* desc) {
@@ -2807,6 +2816,8 @@ void InstallFeatureHooks() {
          reinterpret_cast<void**>(&g_orig_QuazalSessionDescCtor)},
         {"QuazalInit", 0x10963FE0u, reinterpret_cast<void*>(&Hook_QuazalInit),
          reinterpret_cast<void**>(&g_orig_QuazalInit)},
+        {"IsOnlineSession", 0x1095B7F0u, reinterpret_cast<void*>(&Hook_IsOnlineSession),
+         reinterpret_cast<void**>(&g_orig_IsOnlineSession)},
         {"QuazalCreateSession", 0x10960AF0u, reinterpret_cast<void*>(&Hook_QuazalCreateSession),
          reinterpret_cast<void**>(&g_orig_QuazalCreateSession)},
         {"QuazalJoinSession", 0x1095FEE0u, reinterpret_cast<void*>(&Hook_QuazalJoinSession),
